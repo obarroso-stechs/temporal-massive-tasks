@@ -1,0 +1,11 @@
+# Core API + Temporal runtime
+fastapi>=0.111.0,<1.0.0
+uvicorn[standard]>=0.30.0,<1.0.0
+temporalio>=1.7.0,<2.0.0
+
+# NBI/OpenAPI client runtime
+urllib3>=2.1.0,<3.0.0
+python-dateutil>=2.8.2
+typing-extensions>=4.7.1
+pydantic>=2,<3
+environs==11.0.0
