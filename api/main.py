@@ -7,7 +7,6 @@ from pathlib import Path
 from fastapi import FastAPI
 import uvicorn
 
-# Allow running this file directly from /api with: python main.py
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -18,8 +17,6 @@ from routers.firmware import router as firmware_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Temporal Python SDK Client does not require explicit close;
-    # connections are released by garbage collection.
     app.state.temporal_client = await create_temporal_client()
     yield
 
@@ -34,4 +31,6 @@ app.include_router(firmware_router)
 
 
 if __name__ == "__main__":
+    # Para desarrollo, usar uvicorn con reload. En producción, correr con Gunicorn o similar sin reload.
+    # ademas deberia parametrizar host/port y otras configs de uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=23200, reload=False)

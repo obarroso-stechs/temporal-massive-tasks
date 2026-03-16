@@ -59,9 +59,6 @@ class FirmwareBatchStartResponse(BaseModel):
     start_at: datetime | None = None
 
 
-# ── Enum de estados de ejecucion ─────────────────────────────────
-
-
 class DeviceExecutionStatus(str, Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
@@ -84,9 +81,6 @@ class DeviceStatusItem(BaseModel):
     serial_number: str
     status: DeviceExecutionStatus
     detail: str | None = None
-
-
-# ── Responses ────────────────────────────────────────────────────
 
 
 class DeviceStatusResponse(BaseModel):

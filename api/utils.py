@@ -1,5 +1,3 @@
-"""Utilidades para parsear el Event History de Temporal a dicts serializables."""
-
 from __future__ import annotations
 
 from collections import defaultdict

@@ -20,7 +20,7 @@ async def run_worker() -> None:
     # El ThreadPoolExecutor permite ejecutar múltiples activities en paralelo
     # sin bloquear el event loop de Temporal.
     print("WORKER STARTED")
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    with ThreadPoolExecutor(max_workers=20) as executor: # despues estaria bueno parametrizar esto
         worker = Worker(
             client,
             task_queue=TEMPORAL_TASK_QUEUE,

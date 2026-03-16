@@ -10,9 +10,9 @@ from temporalio.service import RPCError
 
 from dependencies import get_temporal_client
 from schemas import (
-    BatchGroupStatusRequest,
-    BatchGroupStatusResponse,
-    BatchGroupSummary,
+    # BatchGroupStatusRequest,
+    # BatchGroupStatusResponse,
+    # BatchGroupSummary,
     BatchProgress,
     DeviceExecutionStatus,
     DeviceStatusResponse,
@@ -45,9 +45,6 @@ def _to_domain_items(payload: FirmwareBatchRequest) -> list[UpdateFirmware]:
         )
         for item in payload.items
     ]
-
-
-# ── Endpoints de inicio ──────────────────────────────────────────
 
 
 @router.post(
@@ -104,9 +101,6 @@ async def schedule_batch(
     )
 
 
-# ── Caso 1: Estado individual de un equipo ───────────────────────
-
-
 @router.get(
     "/batch/{workflow_id}/device/{serial_number}/status",
     response_model=DeviceStatusResponse,
@@ -117,9 +111,6 @@ async def get_device_status(
     temporal_client: Client = Depends(get_temporal_client),
 ) -> DeviceStatusResponse:
     """Consulta el estado de un equipo individual dentro de un batch.
-
-    Construye el child workflow ID como {workflow_id}-{serial_number}
-    y consulta su estado y event history completo.
     """
     child_workflow_id = f"{workflow_id}-{serial_number}"
     child_handle = temporal_client.get_workflow_handle(child_workflow_id)
@@ -189,9 +180,6 @@ async def get_device_status(
     )
 
 
-# ── Caso 2: Estado del batch con devices y events ────────────────
-
-
 @router.get(
     "/batch/{workflow_id}/status",
     response_model=WorkflowStatusResponse,
@@ -201,9 +189,6 @@ async def get_batch_status(
     temporal_client: Client = Depends(get_temporal_client),
 ) -> WorkflowStatusResponse:
     """Consulta el estado de un batch con detalle por equipo.
-
-    Retorna el progreso, la lista de devices con su status y events
-    agrupados del parent history, y el resultado si completó.
     """
     return await _build_batch_status(workflow_id, temporal_client)
 
@@ -211,71 +196,71 @@ async def get_batch_status(
 # ── Caso 3: Estado de multiples batches ──────────────────────────
 
 
-@router.post(
-    "/batch/group/status",
-    response_model=BatchGroupStatusResponse,
-)
-async def get_group_status(
-    payload: BatchGroupStatusRequest,
-    temporal_client: Client = Depends(get_temporal_client),
-) -> BatchGroupStatusResponse:
-    """Consulta el estado agregado de multiples batches."""
-    batches: list[WorkflowStatusResponse] = []
+# @router.post(
+#     "/batch/group/status",
+#     response_model=BatchGroupStatusResponse,
+# )
+# async def get_group_status(
+#     payload: BatchGroupStatusRequest,
+#     temporal_client: Client = Depends(get_temporal_client),
+# ) -> BatchGroupStatusResponse:
+#     """Consulta el estado agregado de multiples batches."""
+#     batches: list[WorkflowStatusResponse] = []
 
-    for wf_id in payload.workflow_ids:
-        try:
-            batch_status = await _build_batch_status(wf_id, temporal_client)
-            batches.append(batch_status)
-        except HTTPException:
-            # Si un workflow no existe, reportar como NOT_FOUND
-            batches.append(
-                WorkflowStatusResponse(
-                    workflow_id=wf_id,
-                    status="NOT_FOUND",
-                    progress=None,
-                    devices=[],
-                )
-            )
+#     for wf_id in payload.workflow_ids:
+#         try:
+#             batch_status = await _build_batch_status(wf_id, temporal_client)
+#             batches.append(batch_status)
+#         except HTTPException:
+#             # Si un workflow no existe, reportar como NOT_FOUND
+#             batches.append(
+#                 WorkflowStatusResponse(
+#                     workflow_id=wf_id,
+#                     status="NOT_FOUND",
+#                     progress=None,
+#                     devices=[],
+#                 )
+#             )
 
-    # Calcular summary
-    total_devices = 0
-    total_processed = 0
-    total_pending = 0
-    total_failed = 0
-    completed_batches = 0
-    running_batches = 0
-    failed_batches = 0
+#     # Calcular summary
+#     total_devices = 0
+#     total_processed = 0
+#     total_pending = 0
+#     total_failed = 0
+#     completed_batches = 0
+#     running_batches = 0
+#     failed_batches = 0
 
-    for b in batches:
-        if b.progress:
-            total_devices += b.progress.total
-            total_processed += b.progress.processed
-            total_pending += b.progress.pending
-            total_failed += b.progress.failed
-        else:
-            total_devices += len(b.devices)
+#     for b in batches:
+#         if b.progress:
+#             total_devices += b.progress.total
+#             total_processed += b.progress.processed
+#             total_pending += b.progress.pending
+#             total_failed += b.progress.failed
+#         else:
+#             total_devices += len(b.devices)
 
-        if b.status == "COMPLETED":
-            completed_batches += 1
-        elif b.status == "RUNNING":
-            running_batches += 1
-        elif b.status in ("FAILED", "TERMINATED", "TIMED_OUT", "CANCELED"):
-            failed_batches += 1
+#         if b.status == "COMPLETED":
+#             completed_batches += 1
+#         elif b.status == "RUNNING":
+#             running_batches += 1
+#         elif b.status in ("FAILED", "TERMINATED", "TIMED_OUT", "CANCELED"):
+#             failed_batches += 1
 
-    return BatchGroupStatusResponse(
-        batches=batches,
-        summary=BatchGroupSummary(
-            total_batches=len(batches),
-            completed_batches=completed_batches,
-            running_batches=running_batches,
-            failed_batches=failed_batches,
-            total_devices=total_devices,
-            total_processed=total_processed,
-            total_pending=total_pending,
-            total_failed=total_failed,
-            all_completed=completed_batches == len(batches),
-        ),
-    )
+#     return BatchGroupStatusResponse(
+#         batches=batches,
+#         summary=BatchGroupSummary(
+#             total_batches=len(batches),
+#             completed_batches=completed_batches,
+#             running_batches=running_batches,
+#             failed_batches=failed_batches,
+#             total_devices=total_devices,
+#             total_processed=total_processed,
+#             total_pending=total_pending,
+#             total_failed=total_failed,
+#             all_completed=completed_batches == len(batches),
+#         ),
+#     )
 
 
 # ── Helpers ───────────────────────────────────────────────────────
@@ -298,7 +283,6 @@ async def _build_batch_status(
 
     wf_status = description.status.name if description.status else "UNKNOWN"
 
-    # Obtener progreso y estados de devices via queries
     progress = None
     device_statuses: dict[str, str] = {}
     if wf_status == "RUNNING":
@@ -317,11 +301,9 @@ async def _build_batch_status(
         except Exception:
             pass
 
-    # Fetch event history del parent y agrupar por device
     history = await handle.fetch_history()
     events_by_device = group_child_events_by_device(history, workflow_id)
 
-    # Resultado interno si completó (solo para derivar estados finales)
     completed_result = None
     if wf_status == "COMPLETED":
         try:
@@ -329,7 +311,6 @@ async def _build_batch_status(
         except Exception:
             pass
 
-        # Cuando el workflow completó, derivar device statuses del resultado
         if completed_result and not device_statuses:
             for item in completed_result:
                 if isinstance(item, dict) and "serial_number" in item:
@@ -337,14 +318,11 @@ async def _build_batch_status(
                     if serial_number:
                         device_statuses[serial_number] = "COMPLETED"
                 elif isinstance(item, str) and item.startswith("ERROR ["):
-                    # Extraer serial de "ERROR [serial]: ..."
                     try:
                         sn = item.split("[")[1].split("]")[0]
                         device_statuses[sn] = "FAILED"
                     except (IndexError, ValueError):
                         pass
-
-    # Construir lista de devices con detail minimo para cliente
     all_serials = set(device_statuses.keys()) | set(events_by_device.keys())
     result_details: dict[str, str] = {}
     if completed_result:
@@ -374,7 +352,6 @@ async def _build_batch_status(
         event_detail = _extract_detail_from_events(events_by_device.get(serial, []))
         result_detail = result_details.get(serial)
 
-        # Para errores, priorizar causa real desde event history sobre mensajes genéricos.
         if ds in {
             DeviceExecutionStatus.FAILED.value,
             DeviceExecutionStatus.TIMED_OUT.value,
@@ -398,7 +375,6 @@ async def _build_batch_status(
             )
         )
 
-    # Si el workflow completó y no teniamos progress, calcularlo
     if wf_status == "COMPLETED" and progress is None and devices:
         completed = sum(1 for d in devices if d.status == DeviceExecutionStatus.COMPLETED)
         failed = sum(1 for d in devices if d.status == DeviceExecutionStatus.FAILED)
@@ -517,18 +493,13 @@ def _normalize_client_detail(detail: str | None) -> str | None:
     if not text:
         return None
 
-    # Mensaje demasiado genérico, preferir detalle de causa cuando exista.
     if text == "Child Workflow execution failed":
         return None
-
-    # Si viene serializado como dict de python/json desde NBI, resumir.
     parsed = _try_parse_mapping(text)
     if parsed:
         result_value = str(parsed.get("result", "")).strip().lower()
         if result_value == "success":
             return SUCCESS_DETAIL
-
-        # En caso de no-success, intentar detalle más útil.
         for key in ("errorStrDetail", "errorStr", "message", "detail"):
             value = parsed.get(key)
             if isinstance(value, str) and value.strip():
@@ -545,8 +516,6 @@ def _try_parse_mapping(raw: str) -> dict | None:
             return maybe_obj
     except (SyntaxError, ValueError):
         pass
-
-    # Fallback simple para cadenas que parecen JSON sin usar parser pesado.
     if raw.startswith("{") and raw.endswith("}") and "\"result\"" in raw:
         try:
             import json

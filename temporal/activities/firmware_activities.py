@@ -1,11 +1,3 @@
-"""Firmware update activities.
-
-Todas las activities son funciones sync (def, no async def) porque
-el NbiClient usa urllib3 bloqueante. El worker debe configurar un
-ThreadPoolExecutor como activity_executor para que corran en threads
-separados sin bloquear el event loop de Temporal.
-"""
-
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 

@@ -11,6 +11,7 @@ with workflow.unsafe.imports_passed_through():
         UpdateFirmware,
     )
 
+# Este tipo de workflow es el que interactua con la nbi via las activities
 
 @workflow.defn
 class FirmwareUpdateChildWorkflow:
