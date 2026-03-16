@@ -347,6 +347,62 @@ def _failure_to_dict(failure: Any) -> dict[str, Any]:
     return {"failure": failure_detail} if failure_detail else {}
 
 
+def extract_client_detail_from_failure(
+    failure: dict[str, Any] | None,
+) -> str | None:
+    """Extrae un mensaje corto y util para cliente desde un failure recursivo."""
+    if not failure:
+        return None
+
+    cursor = failure
+    last_message = cursor.get("message")
+
+    while isinstance(cursor.get("cause"), dict):
+        cursor = cursor["cause"]
+        if cursor.get("message"):
+            last_message = cursor.get("message")
+
+    if not last_message:
+        return None
+
+    return _normalize_client_message(last_message)
+
+
+def extract_client_detail_from_event_details(details: dict[str, Any]) -> str | None:
+    """Extrae detail para cliente desde details de un evento parseado."""
+    failure = details.get("failure")
+    if isinstance(failure, dict):
+        detail = extract_client_detail_from_failure(failure)
+        if detail:
+            return detail
+
+    result = details.get("result")
+    if isinstance(result, str) and result.strip():
+        return result.strip()
+
+    return None
+
+
+def extract_retrying_detail(raw_description: Any) -> str | None:
+    """Obtiene un mensaje RETRYING desde pending_activities de describe()."""
+    for info in raw_description.pending_activities:
+        if not info.HasField("last_failure"):
+            continue
+
+        failure = _build_failure(info.last_failure)
+        detail = extract_client_detail_from_failure(failure)
+        if not detail:
+            detail = "Retrying activity"
+
+        attempt = info.attempt
+        maximum_attempts = info.maximum_attempts
+        if maximum_attempts and maximum_attempts > 0:
+            return f"{detail} (attempt {attempt}/{maximum_attempts})"
+        return f"{detail} (attempt {attempt})"
+
+    return None
+
+
 def _build_failure(failure: Any) -> dict[str, Any] | None:
     """Construye un dict recursivo completo de un Failure protobuf.
 
@@ -394,6 +450,14 @@ def _build_failure(failure: Any) -> dict[str, Any] | None:
             result["cause"] = cause_dict
 
     return result or None
+
+
+def _normalize_client_message(message: str) -> str:
+    """Limpia prefijos ruidosos para exponer un detalle corto al cliente."""
+    cleaned = message.strip()
+    if cleaned.startswith("[Errno") and "] " in cleaned:
+        cleaned = cleaned.split("] ", 1)[1]
+    return cleaned
 
 
 def _payloads_to_str(payloads: Any) -> str | None:

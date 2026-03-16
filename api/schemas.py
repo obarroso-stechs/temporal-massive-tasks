@@ -59,33 +59,18 @@ class FirmwareBatchStartResponse(BaseModel):
     start_at: datetime | None = None
 
 
-class FirmwareResultItem(BaseModel):
-    serial_number: str | None = None
-    filename: str | None = None
-    status: str | None = None
-
-
 # ── Enum de estados de ejecucion ─────────────────────────────────
 
 
 class DeviceExecutionStatus(str, Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
+    RETRYING = "RETRYING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     TIMED_OUT = "TIMED_OUT"
     TERMINATED = "TERMINATED"
     CANCELED = "CANCELED"
-
-
-# ── Modelos de event history ─────────────────────────────────────
-
-
-class WorkflowEvent(BaseModel):
-    event_id: int
-    timestamp: str | None
-    event_type: str
-    details: dict
 
 
 class BatchProgress(BaseModel):
@@ -95,10 +80,10 @@ class BatchProgress(BaseModel):
     failed: int
 
 
-class DeviceWithEvents(BaseModel):
+class DeviceStatusItem(BaseModel):
     serial_number: str
     status: DeviceExecutionStatus
-    events: List[WorkflowEvent]
+    detail: str | None = None
 
 
 # ── Responses ────────────────────────────────────────────────────
@@ -108,15 +93,14 @@ class DeviceStatusResponse(BaseModel):
     workflow_id: str
     serial_number: str
     status: DeviceExecutionStatus
-    result: FirmwareResultItem | None = None
-    events: List[WorkflowEvent]
+    detail: str | None = None
 
 
 class WorkflowStatusResponse(BaseModel):
     workflow_id: str
     status: str
     progress: BatchProgress | None = None
-    devices: List[DeviceWithEvents]
+    devices: List[DeviceStatusItem]
 
 
 class BatchGroupStatusRequest(BaseModel):

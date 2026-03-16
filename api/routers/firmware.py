@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 
@@ -15,7 +16,7 @@ from schemas import (
     BatchProgress,
     DeviceExecutionStatus,
     DeviceStatusResponse,
-    DeviceWithEvents,
+    DeviceStatusItem,
     FirmwareBatchRequest,
     FirmwareBatchScheduledRequest,
     FirmwareBatchStartResponse,
@@ -24,9 +25,16 @@ from schemas import (
 from service import _start_firmware_batch, compute_start_delay
 from temporal.models import UpdateFirmware
 from temporal.workflows.parent_workflow import FirmwareUpdateBatchWorkflow
-from utils import enrich_events_with_pending_activities, group_child_events_by_device, parse_workflow_events
+from utils import (
+    extract_client_detail_from_event_details,
+    extract_retrying_detail,
+    group_child_events_by_device,
+    parse_workflow_events,
+)
 
 router = APIRouter(prefix="/firmware", tags=["firmware"])
+
+SUCCESS_DETAIL = "Update task executed successfully"
 
 
 def _to_domain_items(payload: FirmwareBatchRequest) -> list[UpdateFirmware]:
@@ -136,8 +144,7 @@ async def get_device_status(
                 workflow_id=child_workflow_id,
                 serial_number=serial_number,
                 status=DeviceExecutionStatus(device_statuses[serial_number]),
-                result=None,
-                events=[],
+                detail=None,
             )
 
         raise HTTPException(
@@ -145,31 +152,40 @@ async def get_device_status(
             detail=f"Device '{serial_number}' not found in workflow '{workflow_id}'",
         )
 
-    # Child workflow existe: obtener status, history y resultado
+    # Child workflow existe: obtener status y detalle para cliente
     wf_status = description.status.name if description.status else "UNKNOWN"
     device_status = _temporal_status_to_device_status(wf_status)
 
-    # Fetch event history
-    history = await child_handle.fetch_history()
-    events = parse_workflow_events(history)
-
-    # Enriquecer ACTIVITY_TASK_SCHEDULED con activity_result de pending activities
-    events = enrich_events_with_pending_activities(events, description.raw_description)
-
-    # Resultado si completó
-    result = None
-    if wf_status == "COMPLETED":
+    detail = None
+    if wf_status == "RUNNING":
+        retrying_detail = extract_retrying_detail(description.raw_description)
+        if retrying_detail:
+            device_status = DeviceExecutionStatus.RETRYING
+            detail = retrying_detail
+    elif wf_status == "COMPLETED":
         try:
             result = _normalize_device_result(await child_handle.result())
+            detail = result.get("status") if result else None
         except Exception:
-            pass
+            detail = None
+        detail = _normalize_client_detail(detail)
+        if not detail:
+            detail = SUCCESS_DETAIL
+    elif wf_status in ("FAILED", "TIMED_OUT", "TERMINATED", "CANCELED"):
+        try:
+            history = await child_handle.fetch_history()
+            events = parse_workflow_events(history)
+            detail = _extract_detail_from_events(events)
+        except Exception:
+            detail = "Internal server error"
+        if not detail:
+            detail = "Internal server error"
 
     return DeviceStatusResponse(
         workflow_id=child_workflow_id,
         serial_number=serial_number,
         status=device_status,
-        result=result,
-        events=events,
+        detail=detail,
     )
 
 
@@ -328,16 +344,57 @@ async def _build_batch_status(
                     except (IndexError, ValueError):
                         pass
 
-    # Construir lista de devices con events
+    # Construir lista de devices con detail minimo para cliente
     all_serials = set(device_statuses.keys()) | set(events_by_device.keys())
-    devices: list[DeviceWithEvents] = []
+    result_details: dict[str, str] = {}
+    if completed_result:
+        for item in completed_result:
+            if isinstance(item, dict) and "serial_number" in item:
+                serial_number = item.get("serial_number")
+                if serial_number:
+                    status_value = item.get("status")
+                    result_details[serial_number] = (
+                        status_value if isinstance(status_value, str) and status_value else "success"
+                    )
+            elif isinstance(item, str) and item.startswith("ERROR ["):
+                try:
+                    sn = item.split("[")[1].split("]")[0]
+                    detail = item.split(": ", 1)[1] if ": " in item else item
+                    result_details[sn] = detail
+                except (IndexError, ValueError):
+                    pass
+
+    devices: list[DeviceStatusItem] = []
     for serial in sorted(all_serials):
         ds = device_statuses.get(serial, "PENDING")
+        terminal_status = _terminal_status_from_events(events_by_device.get(serial, []))
+        if terminal_status is not None:
+            ds = terminal_status.value
+
+        event_detail = _extract_detail_from_events(events_by_device.get(serial, []))
+        result_detail = result_details.get(serial)
+
+        # Para errores, priorizar causa real desde event history sobre mensajes genéricos.
+        if ds in {
+            DeviceExecutionStatus.FAILED.value,
+            DeviceExecutionStatus.TIMED_OUT.value,
+            DeviceExecutionStatus.TERMINATED.value,
+            DeviceExecutionStatus.CANCELED.value,
+        }:
+            detail = event_detail or result_detail
+        else:
+            detail = result_detail or event_detail
+
+        detail = _normalize_client_detail(detail)
+
+        if ds == DeviceExecutionStatus.COMPLETED.value and not detail:
+            detail = SUCCESS_DETAIL
+
         devices.append(
-            DeviceWithEvents(
+            DeviceStatusItem(
                 serial_number=serial,
                 status=DeviceExecutionStatus(ds),
-                events=events_by_device.get(serial, []),
+                detail=detail,
             )
         )
 
@@ -417,4 +474,87 @@ def _normalize_device_result(result: object) -> dict | None:
     normalized = _normalize_result_item(result)
     if isinstance(normalized, dict):
         return normalized
+    return None
+
+
+def _terminal_status_from_events(
+    events: list[dict],
+) -> DeviceExecutionStatus | None:
+    """Obtiene estado terminal del child a partir de eventos del parent."""
+    terminal_mapping = {
+        "CHILD_WORKFLOW_EXECUTION_COMPLETED": DeviceExecutionStatus.COMPLETED,
+        "CHILD_WORKFLOW_EXECUTION_FAILED": DeviceExecutionStatus.FAILED,
+        "CHILD_WORKFLOW_EXECUTION_TIMED_OUT": DeviceExecutionStatus.TIMED_OUT,
+        "CHILD_WORKFLOW_EXECUTION_TERMINATED": DeviceExecutionStatus.TERMINATED,
+        "CHILD_WORKFLOW_EXECUTION_CANCELED": DeviceExecutionStatus.CANCELED,
+    }
+
+    for event in reversed(events):
+        event_type = event.get("event_type")
+        if event_type in terminal_mapping:
+            return terminal_mapping[event_type]
+    return None
+
+
+def _extract_detail_from_events(events: list[dict]) -> str | None:
+    """Obtiene detail legible para cliente a partir de eventos parseados."""
+    for event in reversed(events):
+        details = event.get("details")
+        if not isinstance(details, dict):
+            continue
+        detail = extract_client_detail_from_event_details(details)
+        if detail:
+            return detail
+    return None
+
+
+def _normalize_client_detail(detail: str | None) -> str | None:
+    """Normaliza detail para UX cliente, evitando payloads verbosos/crudos."""
+    if not detail:
+        return None
+
+    text = detail.strip()
+    if not text:
+        return None
+
+    # Mensaje demasiado genérico, preferir detalle de causa cuando exista.
+    if text == "Child Workflow execution failed":
+        return None
+
+    # Si viene serializado como dict de python/json desde NBI, resumir.
+    parsed = _try_parse_mapping(text)
+    if parsed:
+        result_value = str(parsed.get("result", "")).strip().lower()
+        if result_value == "success":
+            return SUCCESS_DETAIL
+
+        # En caso de no-success, intentar detalle más útil.
+        for key in ("errorStrDetail", "errorStr", "message", "detail"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return text
+
+
+def _try_parse_mapping(raw: str) -> dict | None:
+    """Intenta parsear dict serializado en formato JSON o literal de Python."""
+    try:
+        maybe_obj = ast.literal_eval(raw)
+        if isinstance(maybe_obj, dict):
+            return maybe_obj
+    except (SyntaxError, ValueError):
+        pass
+
+    # Fallback simple para cadenas que parecen JSON sin usar parser pesado.
+    if raw.startswith("{") and raw.endswith("}") and "\"result\"" in raw:
+        try:
+            import json
+
+            maybe_obj = json.loads(raw)
+            if isinstance(maybe_obj, dict):
+                return maybe_obj
+        except (json.JSONDecodeError, TypeError):
+            return None
+
     return None
