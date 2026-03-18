@@ -1,7 +1,4 @@
-from __future__ import annotations
-
 from dataclasses import dataclass, field
-from typing import List
 
 
 @dataclass
@@ -35,7 +32,7 @@ class FirmwareUpdateBatchInput:
     ``device_statuses`` lleva el estado de cada equipo entre continue-as-new.
     """
 
-    items: List[UpdateFirmware]
+    items: list[UpdateFirmware]
     processed_count: int = 0
     device_statuses: dict = field(default_factory=dict)
 
