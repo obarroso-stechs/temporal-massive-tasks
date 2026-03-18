@@ -36,7 +36,11 @@ class FirmwareBatchRequest(BaseModel):
 
 class FirmwareBatchScheduledRequest(FirmwareBatchRequest):
     start_at: datetime = Field(
-        description="UTC datetime when workflow should start"
+        description=(
+            "Datetime when the workflow should start. "
+            "Must include timezone offset (e.g. 2026-03-18T11:20:00-03:00 for Argentina). "
+            "Do NOT use 'Z' (UTC) unless you intend UTC time."
+        )
     )
 
     @field_validator("start_at")
@@ -44,8 +48,15 @@ class FirmwareBatchScheduledRequest(FirmwareBatchRequest):
     def validate_start_at_is_future(cls, value: datetime) -> datetime:
         if value.tzinfo is None:
             raise ValueError("start_at must include timezone information")
-        if value.astimezone(UTC) <= datetime.now(UTC):
-            raise ValueError("start_at must be in the future")
+        now_utc = datetime.now(UTC)
+        if value.astimezone(UTC) <= now_utc:
+            raise ValueError(
+                f"start_at must be in the future. "
+                f"Received {value.isoformat()} (= {value.astimezone(UTC).strftime('%H:%M:%S')} UTC), "
+                f"but current UTC time is {now_utc.strftime('%H:%M:%S')} UTC. "
+                f"If you are in Argentina (UTC-3), send the time with offset -03:00, "
+                f"e.g.: {value.replace(tzinfo=None).isoformat()}-03:00"
+            )
         return value
 
 
