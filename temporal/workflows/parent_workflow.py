@@ -1,0 +1,155 @@
+import asyncio
+from typing import List, Union
+
+from temporalio import workflow
+
+with workflow.unsafe.imports_passed_through():
+    from temporal.constants import TEMPORAL_TASK_QUEUE
+    from temporal.models import (
+        FirmwareUpdateBatchInput,
+        FirmwareUpdateResult,
+        UpdateFirmware,
+    )
+    from temporal.workflows.child_workflow import FirmwareUpdateChildWorkflow
+
+# Cuántos child workflows lanzar en paralelo por batch.
+# Cada child genera ~5 eventos en el padre (init, started, completed).
+# Con BATCH_SIZE=50 y continue-as-new, nos mantenemos lejos del límite de 50K eventos.
+BATCH_SIZE = 50
+
+
+@workflow.defn
+class FirmwareUpdateBatchWorkflow:
+    """Workflow padre: procesa miles de firmware updates en batches.
+
+    Recibe una lista de UpdateFirmware, la particiona en batches de
+    BATCH_SIZE, lanza cada batch en paralelo con asyncio.gather, y
+    usa continue-as-new cuando Temporal lo sugiere para mantener
+    el Event History acotado.
+
+    Expone queries para consultar el progreso y el estado de cada equipo.
+    """
+
+    def __init__(self) -> None:
+        self._total: int = 0
+        self._processed: int = 0
+        self._failed: int = 0
+        self._device_statuses: dict[str, str] = {}
+
+    @workflow.query
+    def get_progress(self) -> dict:
+        return {
+            "total": self._total,
+            "processed": self._processed,
+            "pending": self._total - self._processed,
+            "failed": self._failed,
+        }
+
+    @workflow.query
+    def get_device_statuses(self) -> dict:
+        return dict(self._device_statuses)
+
+    @workflow.run
+    async def run(
+        self, input: FirmwareUpdateBatchInput
+    ) -> List[Union[FirmwareUpdateResult, str]]:
+        # Restaurar estados de continue-as-new previo
+        self._device_statuses = dict(input.device_statuses)
+
+        # Marcar items pendientes como PENDING
+        for item in input.items:
+            if item.serialNumber not in self._device_statuses:
+                self._device_statuses[item.serialNumber] = "PENDING"
+
+        self._total = len(self._device_statuses)
+        self._processed = input.processed_count
+        self._failed = sum(
+            1 for s in self._device_statuses.values() if s == "FAILED"
+        )
+
+        results: List[Union[FirmwareUpdateResult, str]] = []
+        remaining = list(input.items)
+
+        while remaining:
+            batch = remaining[:BATCH_SIZE]
+            remaining = remaining[BATCH_SIZE:]
+
+            # Marcar equipos del batch como RUNNING
+            for item in batch:
+                self._device_statuses[item.serialNumber] = "RUNNING"
+
+            batch_results = await self._execute_batch(batch)
+            results.extend(batch_results)
+
+            # Checkpoint: si Temporal sugiere continue-as-new, reiniciar
+            # con los items que quedan y el progreso acumulado.
+            if remaining and workflow.info().is_continue_as_new_suggested():
+                workflow.logger.info(
+                    f"Continue-as-new: {self._processed} procesados, "
+                    f"{len(remaining)} pendientes"
+                )
+                workflow.continue_as_new(
+                    FirmwareUpdateBatchInput(
+                        items=remaining,
+                        processed_count=self._processed,
+                        device_statuses=self._device_statuses,
+                    )
+                )
+
+        workflow.logger.info(
+            f"Batch completo: {self._processed} equipos procesados"
+        )
+        return results
+
+    async def _execute_batch(
+        self,
+        batch: List[UpdateFirmware],
+    ) -> List[Union[FirmwareUpdateResult, str]]:
+        """Lanza N child workflows en paralelo y actualiza estado por completion."""
+        parent_id = workflow.info().workflow_id
+
+        async def run_one(
+            idx: int,
+            item: UpdateFirmware,
+        ) -> tuple[int, Union[FirmwareUpdateResult, BaseException]]:
+            try:
+                result = await workflow.execute_child_workflow(
+                    FirmwareUpdateChildWorkflow.run,
+                    item,
+                    id=f"{parent_id}-{item.serialNumber}",
+                    task_queue=TEMPORAL_TASK_QUEUE,
+                )
+                return idx, result
+            except BaseException as exc:
+                return idx, exc
+
+        tasks = [
+            asyncio.create_task(run_one(idx, item))
+            for idx, item in enumerate(batch)
+        ]
+
+        raw_results: list[Union[FirmwareUpdateResult, str, None]] = [None] * len(batch)
+
+        for done in asyncio.as_completed(tasks):
+            idx, completed_result = await done
+            item = batch[idx]
+
+            if isinstance(completed_result, BaseException):
+                workflow.logger.warning(
+                    f"Child workflow falló para {item.serialNumber}: {completed_result}"
+                )
+                raw_results[idx] = f"ERROR [{item.serialNumber}]: {completed_result}"
+                self._device_statuses[item.serialNumber] = "FAILED"
+                self._failed += 1
+            else:
+                raw_results[idx] = completed_result
+                self._device_statuses[item.serialNumber] = "COMPLETED"
+
+            self._processed += 1
+
+        results: List[Union[FirmwareUpdateResult, str]] = []
+        for result in raw_results:
+            if result is not None:
+                results.append(result)
+
+        return results

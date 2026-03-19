@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from temporal.activities.firmware_activities import trigger_firmware_download
