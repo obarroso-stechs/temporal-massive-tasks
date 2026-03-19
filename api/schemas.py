@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import Enum
 from typing import List
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -40,16 +41,42 @@ class FirmwareBatchStartResponse(BaseModel):
     start_at: datetime | None = None
 
 
-class FirmwareResultItem(BaseModel):
-    serial_number: str | None = None
-    filename: str | None = None
-    status: str | None = None
+class DeviceExecutionStatus(str, Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    RETRYING = "RETRYING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    TIMED_OUT = "TIMED_OUT"
+    TERMINATED = "TERMINATED"
+    CANCELED = "CANCELED"
+
+
+class BatchProgress(BaseModel):
+    total: int
+    processed: int
+    pending: int
+    failed: int
+
+
+class DeviceStatusItem(BaseModel):
+    serial_number: str
+    status: DeviceExecutionStatus
+    detail: str | None = None
+
+
+class DeviceStatusResponse(BaseModel):
+    workflow_id: str
+    serial_number: str
+    status: DeviceExecutionStatus
+    detail: str | None = None
 
 
 class WorkflowStatusResponse(BaseModel):
     workflow_id: str
     status: str
-    result: List[FirmwareResultItem | str] | None = None
+    progress: BatchProgress | None = None
+    devices: List[DeviceStatusItem]
 
 
 # ── Parameter Update ──────────────────────────────────────────────
