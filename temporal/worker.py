@@ -4,13 +4,26 @@ from concurrent.futures import ThreadPoolExecutor
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from temporal.activities import trigger_firmware_download, verify_device_exists
+from temporal.activities.firmware_activities import (
+    trigger_firmware_download,
+)
+from temporal.activities.parameter_update_activities import (
+    set_parameter_value,
+)
+from temporal.activities.common_activities import (
+    verify_device_exists,
+)
 from temporal.constants import (
     TEMPORAL_NAMESPACE,
     TEMPORAL_TARGET_HOST,
     TEMPORAL_TASK_QUEUE,
 )
-from temporal.workflows import FirmwareUpdateBatchWorkflow, FirmwareUpdateChildWorkflow
+from temporal.workflows import (
+    FirmwareUpdateBatchWorkflow,
+    FirmwareUpdateChildWorkflow,
+    ParameterUpdateBatchWorkflow,
+    ParameterUpdateChildWorkflow,
+)
 
 
 async def run_worker() -> None:
@@ -24,8 +37,17 @@ async def run_worker() -> None:
         worker = Worker(
             client,
             task_queue=TEMPORAL_TASK_QUEUE,
-            workflows=[FirmwareUpdateBatchWorkflow, FirmwareUpdateChildWorkflow],
-            activities=[verify_device_exists, trigger_firmware_download],
+            workflows=[
+                FirmwareUpdateBatchWorkflow,
+                FirmwareUpdateChildWorkflow,
+                ParameterUpdateBatchWorkflow,
+                ParameterUpdateChildWorkflow,
+            ],
+            activities=[
+                verify_device_exists,
+                trigger_firmware_download,
+                set_parameter_value,
+            ],
             activity_executor=executor,
         )
         await worker.run()

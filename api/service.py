@@ -6,8 +6,14 @@ from datetime import UTC, datetime, timedelta
 from temporalio.client import Client
 
 from temporal.constants import TEMPORAL_TASK_QUEUE
-from temporal.models import FirmwareUpdateBatchInput, UpdateFirmware
-from temporal.workflows.parent_workflow import FirmwareUpdateBatchWorkflow
+from temporal.models import (
+    FirmwareUpdateBatchInput,
+    ParameterUpdateBatchInput,
+    UpdateFirmware,
+    UpdateParameter,
+)
+from temporal.workflows.firmware_update.firmware_update_workflow import FirmwareUpdateBatchWorkflow
+from temporal.workflows.parameter_update.parameter_update_workflow import ParameterUpdateBatchWorkflow
 
 
 async def _start_firmware_batch(
@@ -21,6 +27,24 @@ async def _start_firmware_batch(
     handle = await client.start_workflow(
         FirmwareUpdateBatchWorkflow.run,
         FirmwareUpdateBatchInput(items=items),
+        id=workflow_id,
+        task_queue=TEMPORAL_TASK_QUEUE,
+        start_delay=start_delay,
+    )
+    return handle.id, handle.result_run_id
+
+
+async def _start_parameter_batch(
+    *,
+    client: Client,
+    items: list[UpdateParameter],
+    start_delay: timedelta | None = None,
+) -> tuple[str, str]:
+    workflow_id = f"parameter-update-batch-{uuid.uuid4().hex}"
+
+    handle = await client.start_workflow(
+        ParameterUpdateBatchWorkflow.run,
+        ParameterUpdateBatchInput(items=items),
         id=workflow_id,
         task_queue=TEMPORAL_TASK_QUEUE,
         start_delay=start_delay,

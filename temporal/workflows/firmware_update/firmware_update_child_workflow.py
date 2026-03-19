@@ -1,9 +1,11 @@
 from datetime import timedelta
 
 from temporalio import workflow
+from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from temporal.activities import trigger_firmware_download, verify_device_exists
+    from temporal.activities.firmware_activities import trigger_firmware_download
+    from temporal.activities.common_activities import verify_device_exists
     from temporal.models import (
         FirmwareDownloadInput,
         FirmwareUpdateResult,
@@ -26,6 +28,7 @@ class FirmwareUpdateChildWorkflow:
             verify_device_exists,
             input.serialNumber,
             start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(maximum_attempts=5),
         )
 
         # Paso 2: disparar descarga de firmware al dispositivo
@@ -36,5 +39,6 @@ class FirmwareUpdateChildWorkflow:
                 filename=input.filename,
             ),
             start_to_close_timeout=timedelta(seconds=60),
+            retry_policy=RetryPolicy(maximum_attempts=5),
         )
         return result

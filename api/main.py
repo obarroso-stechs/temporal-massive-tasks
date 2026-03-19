@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from dependencies import create_temporal_client
 from routers.firmware import router as firmware_router
+from routers.parameter_update import router as parameter_update_router
 
 
 @asynccontextmanager
@@ -31,6 +32,7 @@ app = FastAPI(
 )
 
 app.include_router(firmware_router)
+app.include_router(parameter_update_router)
 
 
 if __name__ == "__main__":

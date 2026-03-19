@@ -50,3 +50,39 @@ class WorkflowStatusResponse(BaseModel):
     workflow_id: str
     status: str
     result: List[FirmwareResultItem | str] | None = None
+
+
+# ── Parameter Update ──────────────────────────────────────────────
+
+
+class ParameterUpdateItem(BaseModel):
+    serialNumber: str = Field(min_length=1)
+
+
+class ParameterBatchRequest(BaseModel):
+    items: List[ParameterUpdateItem] = Field(min_length=1)
+
+
+class ParameterBatchScheduledRequest(ParameterBatchRequest):
+    start_at: datetime = Field(
+        description="Datetime con timezone cuando debe iniciar el workflow"
+    )
+
+    @field_validator("start_at")
+    @classmethod
+    def validate_start_at_is_future(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("start_at must include timezone information")
+        if value.astimezone(UTC) <= datetime.now(UTC):
+            raise ValueError("start_at must be in the future")
+        return value
+
+
+class ParameterBatchStartResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    workflow_id: str
+    run_id: str
+    scheduled: bool
+    accepted_at: datetime
+    start_at: datetime | None = None
