@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 
@@ -113,63 +115,11 @@ async def get_device_status(
     Construye el child workflow ID como {workflow_id}-{serial_number}
     y consulta su estado y event history completo.
     """
-    child_workflow_id = f"{workflow_id}-{serial_number}"
-    child_handle = temporal_client.get_workflow_handle(child_workflow_id)
-
-    try:
-        description = await child_handle.describe()
-    except RPCError:
-        # Child workflow no existe: verificar si esta PENDING en el parent
-        parent_handle = temporal_client.get_workflow_handle(workflow_id)
-        try:
-            device_statuses = await parent_handle.query(
-                FirmwareUpdateBatchWorkflow.get_device_statuses
-            )
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Device '{serial_number}' not found in workflow '{workflow_id}'",
-            )
-
-        if serial_number in device_statuses:
-            return DeviceStatusResponse(
-                workflow_id=child_workflow_id,
-                serial_number=serial_number,
-                status=DeviceExecutionStatus(device_statuses[serial_number]),
-                result=None,
-                events=[],
-            )
-
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Device '{serial_number}' not found in workflow '{workflow_id}'",
-        )
-
-    # Child workflow existe: obtener status, history y resultado
-    wf_status = description.status.name if description.status else "UNKNOWN"
-    device_status = _temporal_status_to_device_status(wf_status)
-
-    # Fetch event history
-    history = await child_handle.fetch_history()
-    events = parse_workflow_events(history)
-
-    # Enriquecer ACTIVITY_TASK_SCHEDULED con activity_result de pending activities
-    events = enrich_events_with_pending_activities(events, description.raw_description)
-
-    # Resultado si completó
-    result = None
-    if wf_status == "COMPLETED":
-        try:
-            result = _normalize_device_result(await child_handle.result())
-        except Exception:
-            pass
-
-    return DeviceStatusResponse(
-        workflow_id=child_workflow_id,
+    return await _build_device_status_detail(
+        workflow_id=workflow_id,
         serial_number=serial_number,
-        status=device_status,
-        result=result,
-        events=events,
+        temporal_client=temporal_client,
+        raise_if_missing=True,
     )
 
 
@@ -328,18 +278,31 @@ async def _build_batch_status(
                     except (IndexError, ValueError):
                         pass
 
-    # Construir lista de devices con events
     all_serials = set(device_statuses.keys()) | set(events_by_device.keys())
-    devices: list[DeviceWithEvents] = []
-    for serial in sorted(all_serials):
-        ds = device_statuses.get(serial, "PENDING")
-        devices.append(
-            DeviceWithEvents(
+    device_details = await asyncio.gather(
+        *[
+            _build_device_status_detail(
+                workflow_id=workflow_id,
                 serial_number=serial,
-                status=DeviceExecutionStatus(ds),
-                events=events_by_device.get(serial, []),
+                temporal_client=temporal_client,
+                known_status=DeviceExecutionStatus(device_statuses.get(serial, "PENDING")),
+                fallback_events=events_by_device.get(serial, []),
+                raise_if_missing=False,
             )
+            for serial in sorted(all_serials)
+        ]
+    )
+
+    devices: list[DeviceWithEvents] = [
+        DeviceWithEvents(
+            workflow_id=item.workflow_id,
+            serial_number=item.serial_number,
+            status=item.status,
+            message=item.message,
+            events=item.events,
         )
+        for item in device_details
+    ]
 
     # Si el workflow completó y no teniamos progress, calcularlo
     if wf_status == "COMPLETED" and progress is None and devices:
@@ -417,4 +380,137 @@ def _normalize_device_result(result: object) -> dict | None:
     normalized = _normalize_result_item(result)
     if isinstance(normalized, dict):
         return normalized
+    return None
+
+
+async def _build_device_status_detail(
+    workflow_id: str,
+    serial_number: str,
+    temporal_client: Client,
+    *,
+    known_status: DeviceExecutionStatus | None = None,
+    fallback_events: list[dict] | None = None,
+    raise_if_missing: bool,
+) -> DeviceStatusResponse:
+    child_workflow_id = f"{workflow_id}-{serial_number}"
+    child_handle = temporal_client.get_workflow_handle(child_workflow_id)
+
+    try:
+        description = await child_handle.describe()
+    except RPCError:
+        if known_status is None:
+            parent_handle = temporal_client.get_workflow_handle(workflow_id)
+            try:
+                device_statuses = await parent_handle.query(
+                    FirmwareUpdateBatchWorkflow.get_device_statuses
+                )
+            except Exception:
+                device_statuses = {}
+
+            if serial_number in device_statuses:
+                known_status = DeviceExecutionStatus(device_statuses[serial_number])
+
+        if known_status is not None:
+            return DeviceStatusResponse(
+                workflow_id=child_workflow_id,
+                serial_number=serial_number,
+                status=known_status,
+                message=_extract_message_from_events(fallback_events or []),
+                events=fallback_events or [],
+            )
+
+        if raise_if_missing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Device '{serial_number}' not found in workflow '{workflow_id}'",
+            )
+
+        return DeviceStatusResponse(
+            workflow_id=child_workflow_id,
+            serial_number=serial_number,
+            status=DeviceExecutionStatus.PENDING,
+            message=_extract_message_from_events(fallback_events or []),
+            events=fallback_events or [],
+        )
+
+    wf_status = description.status.name if description.status else "UNKNOWN"
+    device_status = _temporal_status_to_device_status(wf_status)
+
+    history = await child_handle.fetch_history()
+    events = parse_workflow_events(history)
+    events = enrich_events_with_pending_activities(events, description.raw_description)
+
+    message = _extract_message_from_events(events)
+    if wf_status == "COMPLETED":
+        try:
+            normalized_result = _normalize_device_result(await child_handle.result())
+            result_message = _extract_message_from_result(normalized_result)
+            if result_message:
+                message = result_message
+        except Exception:
+            pass
+
+    return DeviceStatusResponse(
+        workflow_id=child_workflow_id,
+        serial_number=serial_number,
+        status=device_status,
+        message=message,
+        events=events,
+    )
+
+
+def _extract_message_from_result(result: dict | None) -> str | None:
+    if not result:
+        return None
+
+    status = result.get("status")
+    if isinstance(status, str) and status:
+        return status
+
+    filename = result.get("filename")
+    serial = result.get("serial_number")
+    if isinstance(filename, str) and filename:
+        if isinstance(serial, str) and serial:
+            return f"Firmware updated for {serial} with {filename}"
+        return f"Firmware updated with {filename}"
+
+    return None
+
+
+def _extract_message_from_events(events: list[dict]) -> str | None:
+    for event in reversed(events):
+        details = event.get("details", {})
+        failure = details.get("failure")
+        if isinstance(failure, dict):
+            failure_message = _extract_failure_message(failure)
+            if failure_message:
+                return failure_message
+
+        raw_result = details.get("result")
+        if isinstance(raw_result, str) and raw_result:
+            # Si viene como JSON serializado, intentar extraer el status interno.
+            try:
+                parsed = json.loads(raw_result)
+                if isinstance(parsed, dict):
+                    status = parsed.get("status")
+                    if isinstance(status, str) and status:
+                        return status
+            except Exception:
+                pass
+            return raw_result
+
+    return None
+
+
+def _extract_failure_message(failure: dict) -> str | None:
+    cause = failure.get("cause")
+    if isinstance(cause, dict):
+        cause_message = _extract_failure_message(cause)
+        if cause_message:
+            return cause_message
+
+    message = failure.get("message")
+    if isinstance(message, str) and message:
+        return message
+
     return None

@@ -10,7 +10,7 @@ with workflow.unsafe.imports_passed_through():
         FirmwareUpdateResult,
         UpdateFirmware,
     )
-    from temporal.workflows.child_workflow import FirmwareUpdateChildWorkflow
+    from temporal.workflows.firmware_update.firmware_update_child_workflow import FirmwareUpdateChildWorkflow
 
 # Cuántos child workflows lanzar en paralelo por batch.
 # Cada child genera ~5 eventos en el padre (init, started, completed).

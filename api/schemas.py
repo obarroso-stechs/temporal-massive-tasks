@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import Enum
-from enum import Enum
 from typing import List
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -112,100 +111,6 @@ class DeviceStatusResponse(BaseModel):
     serial_number: str
     status: DeviceExecutionStatus
     message: str | None = None
-    events: List[WorkflowEvent]
-
-
-# ── Enum de estados de ejecucion ─────────────────────────────────
-
-
-class DeviceExecutionStatus(str, Enum):
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    TIMED_OUT = "TIMED_OUT"
-    TERMINATED = "TERMINATED"
-    CANCELED = "CANCELED"
-
-
-# ── Modelos de event history ─────────────────────────────────────
-
-
-class WorkflowEvent(BaseModel):
-    event_id: int
-    timestamp: str | None
-    event_type: str
-    details: dict
-
-
-class BatchProgress(BaseModel):
-    total: int
-    processed: int
-    pending: int
-    failed: int
-
-
-class DeviceWithEvents(BaseModel):
-    serial_number: str
-    status: DeviceExecutionStatus
-    events: List[WorkflowEvent]
-
-
-# ── Responses ────────────────────────────────────────────────────
-
-
-class DeviceStatusResponse(BaseModel):
-    workflow_id: str
-    serial_number: str
-    status: DeviceExecutionStatus
-    result: FirmwareResultItem | None = None
-    events: List[WorkflowEvent]
-
-
-# ── Enum de estados de ejecucion ─────────────────────────────────
-
-
-class DeviceExecutionStatus(str, Enum):
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    TIMED_OUT = "TIMED_OUT"
-    TERMINATED = "TERMINATED"
-    CANCELED = "CANCELED"
-
-
-# ── Modelos de event history ─────────────────────────────────────
-
-
-class WorkflowEvent(BaseModel):
-    event_id: int
-    timestamp: str | None
-    event_type: str
-    details: dict
-
-
-class BatchProgress(BaseModel):
-    total: int
-    processed: int
-    pending: int
-    failed: int
-
-
-class DeviceWithEvents(BaseModel):
-    serial_number: str
-    status: DeviceExecutionStatus
-    events: List[WorkflowEvent]
-
-
-# ── Responses ────────────────────────────────────────────────────
-
-
-class DeviceStatusResponse(BaseModel):
-    workflow_id: str
-    serial_number: str
-    status: DeviceExecutionStatus
-    result: FirmwareResultItem | None = None
     events: List[WorkflowEvent]
 
 
