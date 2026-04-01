@@ -1,11 +1,12 @@
 import asyncio
+from datetime import timedelta
 from typing import List, Union
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from temporal.constants import TEMPORAL_TASK_QUEUE
+    from configurations.temporal import TEMPORAL_TASK_QUEUE
     from temporal.models import (
         ParameterUpdateBatchInput,
         ParameterUpdateResult,
@@ -14,8 +15,22 @@ with workflow.unsafe.imports_passed_through():
     from temporal.workflows.parameter_update.parameter_update_child_workflow import (
         ParameterUpdateChildWorkflow,
     )
+    from temporal.activities.reporting_activities import (
+        mark_task_started,
+        mark_task_completed,
+        mark_task_canceled,
+        upsert_device_status,
+    )
 
 BATCH_SIZE = 50
+
+
+def _sanitize_error_detail(exc: BaseException) -> str:
+    """Extrae el mensaje más específico de una cadena de excepciones de Temporal."""
+    cause = exc
+    while cause.__cause__ is not None:
+        cause = cause.__cause__
+    return str(cause)
 
 
 @workflow.defn
@@ -35,6 +50,15 @@ class ParameterUpdateBatchWorkflow:
         self._processed: int = 0
         self._failed: int = 0
         self._device_statuses: dict[str, str] = {}
+        self._paused: bool = False
+
+    @workflow.signal
+    def pause_batch(self) -> None:
+        self._paused = True
+
+    @workflow.signal
+    def resume_batch(self) -> None:
+        self._paused = False
 
     @workflow.query
     def get_progress(self) -> dict:
@@ -43,6 +67,7 @@ class ParameterUpdateBatchWorkflow:
             "processed": self._processed,
             "pending": self._total - self._processed,
             "failed": self._failed,
+            "is_paused": self._paused,
         }
 
     @workflow.query
@@ -65,10 +90,21 @@ class ParameterUpdateBatchWorkflow:
             1 for s in self._device_statuses.values() if s == "FAILED"
         )
 
+        if input.processed_count == 0:
+            await workflow.execute_activity(
+                mark_task_started,
+                workflow.info().workflow_id,
+                start_to_close_timeout=timedelta(seconds=10),
+            )
+
         results: List[Union[ParameterUpdateResult, str]] = []
         remaining = list(input.items)
 
         while remaining:
+            # Pause point between batches
+            if self._paused:
+                await workflow.wait_condition(lambda: not self._paused)
+
             batch = remaining[:BATCH_SIZE]
             remaining = remaining[BATCH_SIZE:]
 
@@ -91,6 +127,11 @@ class ParameterUpdateBatchWorkflow:
                     )
                 )
 
+        await workflow.execute_activity(
+            mark_task_completed,
+            workflow.info().workflow_id,
+            start_to_close_timeout=timedelta(seconds=10),
+        )
         workflow.logger.info(
             f"Batch completo: {self._processed} equipos procesados"
         )
@@ -137,9 +178,21 @@ class ParameterUpdateBatchWorkflow:
                 raw_results[idx] = f"ERROR [{item.serialNumber}]: {completed_result}"
                 self._device_statuses[item.serialNumber] = "FAILED"
                 self._failed += 1
+                await workflow.execute_activity(
+                    upsert_device_status,
+                    args=[workflow.info().workflow_id, item.serialNumber, "FAILED", _sanitize_error_detail(completed_result)],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=RetryPolicy(maximum_attempts=5),
+                )
             else:
                 raw_results[idx] = completed_result
                 self._device_statuses[item.serialNumber] = "COMPLETED"
+                await workflow.execute_activity(
+                    upsert_device_status,
+                    args=[workflow.info().workflow_id, item.serialNumber, "COMPLETED", completed_result.message],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=RetryPolicy(maximum_attempts=5),
+                )
 
             self._processed += 1
 

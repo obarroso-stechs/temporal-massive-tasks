@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from nbi import NbiClient, NbiConfig
+from nbi_client_async import AsyncNbiClient, NbiConfig
 from temporal.models import UpdateParameter
 
 
@@ -23,7 +23,7 @@ possible_parameters_to_set = ["Device.WiFi.SSID", "InternetGatewayDevice.LANDevi
 
 
 @activity.defn
-def set_parameter_value(input: UpdateParameter) -> str:
+async def set_parameter_value(input: UpdateParameter) -> str:
     """ 
     Recibe una lista de serial numbers. Este servira para hacer la busqueda de los parametros a setear
     Estos seran SSID y su respectivo enable
@@ -31,7 +31,7 @@ def set_parameter_value(input: UpdateParameter) -> str:
     2. Una vez recibida la respuesta, iterar sobre cada serial number y setear el nuevo valor del parametro via API usando set_parameter_sync.
     """
 
-    parameters = _get_parameter_names_to_set(serial_number=input.serialNumber)
+    parameters = await _get_parameter_names_to_set(serial_number=input.serialNumber)
     
     print(f"Parameters to set for device {input.serialNumber}: {parameters}")
     
@@ -39,12 +39,15 @@ def set_parameter_value(input: UpdateParameter) -> str:
 
     print(f"Reformatted parameters for device {input.serialNumber}: {configured_parameters}")
 
-    with NbiClient(NbiConfig()) as client:
-        response = client.devices.set_parameter_sync(
+    async with AsyncNbiClient(NbiConfig()) as client:
+        await client.devices.set_parameter(
             serial_number=input.serialNumber,
-            body=configured_parameters,            
+            body=configured_parameters,
         )
-    return f"Parameters set for device {input.serialNumber}: {response}"
+    params_summary = ", ".join(
+        f"{p.path}={p.value}" for p in configured_parameters.paramsList
+    )
+    return f"Parámetros actualizados: {params_summary}"
 
 def _reformat_parameters(parameters: list[dict], serial_number: str) -> SetParametersBody:
     params_list = []
@@ -68,12 +71,12 @@ def _reformat_parameters(parameters: list[dict], serial_number: str) -> SetParam
             ))
     return SetParametersBody(paramsList=params_list)
 
-def _get_parameter_names_to_set(serial_number: str) -> list[dict]:
+async def _get_parameter_names_to_set(serial_number: str) -> list[dict]:
     # En este ejemplo, vamos a setear el SSID y su enable, por lo que retornamos esos nombres de parametros.
     # En un caso real, esto podria ser mas dinamico, por ejemplo recibiendo como input una lista de parametros a setear.
-    with NbiClient(NbiConfig()) as client:
+    async with AsyncNbiClient(NbiConfig()) as client:
         for parameter_name in possible_parameters_to_set:
-            parameters = client.devices.get_parameter_sync(
+            parameters = await client.devices.get_parameter(
                 serial_number=serial_number,
                 params_list=parameter_name,
             )

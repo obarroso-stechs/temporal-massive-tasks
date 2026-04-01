@@ -1,7 +1,4 @@
-from __future__ import annotations
-
 from dataclasses import dataclass, field
-from typing import List
 
 
 @dataclass
@@ -23,7 +20,7 @@ class ParameterUpdateBatchInput:
     a traves de multiples ejecuciones encadenadas.
     """
 
-    items: List[UpdateParameter]
+    items: list[UpdateParameter]
     processed_count: int = 0
     device_statuses: dict[str, str] = field(default_factory=dict)
 

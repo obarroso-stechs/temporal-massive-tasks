@@ -2,7 +2,8 @@
 
 Usage
 -----
-    from nbi import NbiClient, NbiConfig
+    from nbi import NbiClient
+    from configurations.nbi import NbiConfig
 
     config = NbiConfig(host="https://...", username="admin", password="secret")
 
@@ -23,9 +24,21 @@ Usage
 from __future__ import annotations
 
 from openapi_client import ApiClient
+from openapi_client import Configuration
 
-from .configuration.nbi_configuration import NbiConfig
+from configurations.nbi import NbiConfig
 from .services import DeviceService, FaultService, FileService, HealthService, TaskService
+
+
+def _build_api_client(config: NbiConfig) -> ApiClient:
+    openapi_cfg = Configuration(
+        host=config.host,
+        username=config.username,
+        password=config.password,
+    )
+    openapi_cfg.verify_ssl = config.verify_ssl
+    openapi_cfg.debug = config.debug
+    return ApiClient(openapi_cfg)
 
 
 class NbiClient:
@@ -42,17 +55,13 @@ class NbiClient:
     """
 
     def __init__(self, config: NbiConfig) -> None:
-        self._raw_client = ApiClient(config.to_openapi_configuration())
+        self._raw_client = _build_api_client(config)
 
         self.devices: DeviceService = DeviceService(self._raw_client)
         self.faults: FaultService = FaultService(self._raw_client)
         self.files: FileService = FileService(self._raw_client)
         self.tasks: TaskService = TaskService(self._raw_client)
         self.health: HealthService = HealthService(self._raw_client)
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     def close(self) -> None:
         """Release the underlying HTTP connection pool (if supported)."""

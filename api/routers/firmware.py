@@ -1,48 +1,37 @@
 from __future__ import annotations
 
-import asyncio
-import json
-from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from temporalio.client import Client
 from temporalio.service import RPCError
 
-from dependencies import get_temporal_client
-from schemas import (
-    BatchGroupStatusRequest,
-    BatchGroupStatusResponse,
-    BatchGroupSummary,
-    BatchProgress,
-    DeviceExecutionStatus,
-    DeviceStatusResponse,
-    DeviceWithEvents,
+from api.schemas.firmware import (
     FirmwareBatchRequest,
     FirmwareBatchScheduledRequest,
     FirmwareBatchStartResponse,
+)
+from api.schemas.workflow import (
+    BatchGroupStatusRequest,
+    BatchGroupStatusResponse,
+    DeviceStatusResponse,
     WorkflowStatusResponse,
 )
-from service import _start_firmware_batch, compute_start_delay
-from temporal.models import UpdateFirmware
-from temporal.workflows.parent_workflow import FirmwareUpdateBatchWorkflow
-from utils import enrich_events_with_pending_activities, group_child_events_by_device, parse_workflow_events
+from api.dependencies.task_dependency import get_task_service
+from api.dependencies.temporal import get_temporal_client
+from api.services.service import BatchOrchestrationService, get_batch_orchestration_service
+from api.services.workflow_status_service import FirmwareWorkflowStatusService
+from db.services.task_service import TaskService
+from temporal.workflows.firmware_update.firmware_update_workflow import FirmwareUpdateBatchWorkflow
 
 router = APIRouter(prefix="/firmware", tags=["firmware"])
 
 
-def _to_domain_items(payload: FirmwareBatchRequest) -> list[UpdateFirmware]:
-    return [
-        UpdateFirmware(
-            serialNumber=item.serialNumber,
-            filename=item.filename,
-        )
-        for item in payload.items
-    ]
+def get_workflow_status_service() -> FirmwareWorkflowStatusService:
+    return FirmwareWorkflowStatusService(FirmwareUpdateBatchWorkflow)
 
 
-# ── Endpoints de inicio ──────────────────────────────────────────
-
+# ── Batch start ───────────────────────────────────────────────────────────────
 
 @router.post(
     "/batch/start-now",
@@ -51,13 +40,21 @@ def _to_domain_items(payload: FirmwareBatchRequest) -> list[UpdateFirmware]:
 )
 async def start_batch_now(
     payload: FirmwareBatchRequest,
+    filename: str = Query(..., min_length=1, description="Nombre del archivo de firmware (debe terminar en .bin)"),
     temporal_client: Client = Depends(get_temporal_client),
+    orchestration: BatchOrchestrationService = Depends(get_batch_orchestration_service),
 ) -> FirmwareBatchStartResponse:
-    workflow_id, run_id = await _start_firmware_batch(
-        client=temporal_client,
-        items=_to_domain_items(payload),
-    )
-
+    if not filename.endswith(".bin"):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El filename debe tener extensión '.bin'.")
+    try:
+        workflow_id, run_id = await orchestration.start_firmware_batch(
+            client=temporal_client,
+            serial_numbers=[i.serialNumber for i in payload.items] if payload.items else None,
+            group_id=payload.group_id,
+            filename=filename,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return FirmwareBatchStartResponse(
         workflow_id=workflow_id,
         run_id=run_id,
@@ -73,22 +70,26 @@ async def start_batch_now(
 )
 async def schedule_batch(
     payload: FirmwareBatchScheduledRequest,
+    filename: str = Query(..., min_length=1, description="Nombre del archivo de firmware (debe terminar en .bin)"),
     temporal_client: Client = Depends(get_temporal_client),
+    orchestration: BatchOrchestrationService = Depends(get_batch_orchestration_service),
 ) -> FirmwareBatchStartResponse:
+    if not filename.endswith(".bin"):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El filename debe tener extensión '.bin'.")
     try:
-        start_delay = compute_start_delay(payload.start_at.astimezone(UTC))
+        start_delay = BatchOrchestrationService.compute_start_delay(payload.start_at.astimezone(UTC))
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
-
-    workflow_id, run_id = await _start_firmware_batch(
-        client=temporal_client,
-        items=_to_domain_items(payload),
-        start_delay=start_delay,
-    )
-
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    try:
+        workflow_id, run_id = await orchestration.start_firmware_batch(
+            client=temporal_client,
+            serial_numbers=[i.serialNumber for i in payload.items] if payload.items else None,
+            group_id=payload.group_id,
+            filename=filename,
+            start_delay=start_delay,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return FirmwareBatchStartResponse(
         workflow_id=workflow_id,
         run_id=run_id,
@@ -98,8 +99,7 @@ async def schedule_batch(
     )
 
 
-# ── Caso 1: Estado individual de un equipo ───────────────────────
-
+# ── Status endpoints ──────────────────────────────────────────────────────────
 
 @router.get(
     "/batch/{workflow_id}/device/{serial_number}/status",
@@ -109,21 +109,20 @@ async def get_device_status(
     workflow_id: str,
     serial_number: str,
     temporal_client: Client = Depends(get_temporal_client),
+    wf_service: FirmwareWorkflowStatusService = Depends(get_workflow_status_service),
+    task_service: TaskService = Depends(get_task_service),
 ) -> DeviceStatusResponse:
-    """Consulta el estado de un equipo individual dentro de un batch.
-
-    Construye el child workflow ID como {workflow_id}-{serial_number}
-    y consulta su estado y event history completo.
-    """
-    return await _build_device_status_detail(
-        workflow_id=workflow_id,
-        serial_number=serial_number,
-        temporal_client=temporal_client,
-        raise_if_missing=True,
-    )
-
-
-# ── Caso 2: Estado del batch con devices y events ────────────────
+    try:
+        return await wf_service.get_device_status(
+            workflow_id=workflow_id,
+            serial_number=serial_number,
+            temporal_client=temporal_client,
+            raise_if_missing=True,
+        )
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_404_NOT_FOUND:
+            raise
+        return await wf_service.get_device_status_from_db(workflow_id, serial_number, task_service)
 
 
 @router.get(
@@ -133,16 +132,67 @@ async def get_device_status(
 async def get_batch_status(
     workflow_id: str,
     temporal_client: Client = Depends(get_temporal_client),
+    wf_service: FirmwareWorkflowStatusService = Depends(get_workflow_status_service),
+    task_service: TaskService = Depends(get_task_service),
 ) -> WorkflowStatusResponse:
-    """Consulta el estado de un batch con detalle por equipo.
+    try:
+        return await wf_service.get_batch_status(workflow_id, temporal_client, task_service)
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_404_NOT_FOUND:
+            raise
+        return await wf_service.get_batch_status_from_db(workflow_id, task_service)
 
-    Retorna el progreso, la lista de devices con su status y events
-    agrupados del parent history, y el resultado si completó.
-    """
-    return await _build_batch_status(workflow_id, temporal_client)
+
+# ── Control endpoints ──────────────────────────────────────────────────────────
+
+@router.post("/batch/{workflow_id}/pause")
+async def pause_batch(
+    workflow_id: str,
+    temporal_client: Client = Depends(get_temporal_client),
+) -> dict:
+    handle = temporal_client.get_workflow_handle(workflow_id)
+    try:
+        await handle.signal(FirmwareUpdateBatchWorkflow.pause_batch)
+    except RPCError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {"workflow_id": workflow_id, "action": "pause"}
 
 
-# ── Caso 3: Estado de multiples batches ──────────────────────────
+@router.post("/batch/{workflow_id}/resume")
+async def resume_batch(
+    workflow_id: str,
+    temporal_client: Client = Depends(get_temporal_client),
+) -> dict:
+    handle = temporal_client.get_workflow_handle(workflow_id)
+    try:
+        await handle.signal(FirmwareUpdateBatchWorkflow.resume_batch)
+    except RPCError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {"workflow_id": workflow_id, "action": "resume"}
+
+
+@router.post("/batch/{workflow_id}/cancel")
+async def cancel_batch(
+    workflow_id: str,
+    temporal_client: Client = Depends(get_temporal_client),
+    task_service: TaskService = Depends(get_task_service),
+) -> dict:
+    handle = temporal_client.get_workflow_handle(workflow_id)
+    try:
+        await handle.cancel()
+    except RPCError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    raw = await task_service.get_batch_status_raw(workflow_id)
+    if raw:
+        non_terminal = [
+            d.serial_number for d in raw["devices"]
+            if d.status.value not in ("COMPLETED", "FAILED", "CANCELED", "TIMED_OUT")
+        ]
+        from datetime import UTC, datetime
+        await task_service.mark_canceled(workflow_id, non_terminal, datetime.now(UTC))
+
+    return {"workflow_id": workflow_id, "action": "cancel"}
 
 
 @router.post(
@@ -152,365 +202,6 @@ async def get_batch_status(
 async def get_group_status(
     payload: BatchGroupStatusRequest,
     temporal_client: Client = Depends(get_temporal_client),
+    wf_service: FirmwareWorkflowStatusService = Depends(get_workflow_status_service),
 ) -> BatchGroupStatusResponse:
-    """Consulta el estado agregado de multiples batches."""
-    batches: list[WorkflowStatusResponse] = []
-
-    for wf_id in payload.workflow_ids:
-        try:
-            batch_status = await _build_batch_status(wf_id, temporal_client)
-            batches.append(batch_status)
-        except HTTPException:
-            # Si un workflow no existe, reportar como NOT_FOUND
-            batches.append(
-                WorkflowStatusResponse(
-                    workflow_id=wf_id,
-                    status="NOT_FOUND",
-                    progress=None,
-                    devices=[],
-                )
-            )
-
-    # Calcular summary
-    total_devices = 0
-    total_processed = 0
-    total_pending = 0
-    total_failed = 0
-    completed_batches = 0
-    running_batches = 0
-    failed_batches = 0
-
-    for b in batches:
-        if b.progress:
-            total_devices += b.progress.total
-            total_processed += b.progress.processed
-            total_pending += b.progress.pending
-            total_failed += b.progress.failed
-        else:
-            total_devices += len(b.devices)
-
-        if b.status == "COMPLETED":
-            completed_batches += 1
-        elif b.status == "RUNNING":
-            running_batches += 1
-        elif b.status in ("FAILED", "TERMINATED", "TIMED_OUT", "CANCELED"):
-            failed_batches += 1
-
-    return BatchGroupStatusResponse(
-        batches=batches,
-        summary=BatchGroupSummary(
-            total_batches=len(batches),
-            completed_batches=completed_batches,
-            running_batches=running_batches,
-            failed_batches=failed_batches,
-            total_devices=total_devices,
-            total_processed=total_processed,
-            total_pending=total_pending,
-            total_failed=total_failed,
-            all_completed=completed_batches == len(batches),
-        ),
-    )
-
-
-# ── Helpers ───────────────────────────────────────────────────────
-
-
-async def _build_batch_status(
-    workflow_id: str,
-    temporal_client: Client,
-) -> WorkflowStatusResponse:
-    """Construye el status completo de un batch con devices y events."""
-    handle = temporal_client.get_workflow_handle(workflow_id)
-
-    try:
-        description = await handle.describe()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow '{workflow_id}' not found: {exc}",
-        ) from exc
-
-    wf_status = description.status.name if description.status else "UNKNOWN"
-
-    # Obtener progreso y estados de devices via queries
-    progress = None
-    device_statuses: dict[str, str] = {}
-    if wf_status == "RUNNING":
-        try:
-            raw_progress = await handle.query(
-                FirmwareUpdateBatchWorkflow.get_progress
-            )
-            progress = BatchProgress(**raw_progress)
-        except Exception:
-            pass
-
-        try:
-            device_statuses = await handle.query(
-                FirmwareUpdateBatchWorkflow.get_device_statuses
-            )
-        except Exception:
-            pass
-
-    # Fetch event history del parent y agrupar por device
-    history = await handle.fetch_history()
-    events_by_device = group_child_events_by_device(history, workflow_id)
-
-    # Resultado interno si completó (solo para derivar estados finales)
-    completed_result = None
-    if wf_status == "COMPLETED":
-        try:
-            completed_result = _normalize_workflow_result(await handle.result())
-        except Exception:
-            pass
-
-        # Cuando el workflow completó, derivar device statuses del resultado
-        if completed_result and not device_statuses:
-            for item in completed_result:
-                if isinstance(item, dict) and "serial_number" in item:
-                    serial_number = item.get("serial_number")
-                    if serial_number:
-                        device_statuses[serial_number] = "COMPLETED"
-                elif isinstance(item, str) and item.startswith("ERROR ["):
-                    # Extraer serial de "ERROR [serial]: ..."
-                    try:
-                        sn = item.split("[")[1].split("]")[0]
-                        device_statuses[sn] = "FAILED"
-                    except (IndexError, ValueError):
-                        pass
-
-    all_serials = set(device_statuses.keys()) | set(events_by_device.keys())
-    device_details = await asyncio.gather(
-        *[
-            _build_device_status_detail(
-                workflow_id=workflow_id,
-                serial_number=serial,
-                temporal_client=temporal_client,
-                known_status=DeviceExecutionStatus(device_statuses.get(serial, "PENDING")),
-                fallback_events=events_by_device.get(serial, []),
-                raise_if_missing=False,
-            )
-            for serial in sorted(all_serials)
-        ]
-    )
-
-    devices: list[DeviceWithEvents] = [
-        DeviceWithEvents(
-            workflow_id=item.workflow_id,
-            serial_number=item.serial_number,
-            status=item.status,
-            message=item.message,
-            events=item.events,
-        )
-        for item in device_details
-    ]
-
-    # Si el workflow completó y no teniamos progress, calcularlo
-    if wf_status == "COMPLETED" and progress is None and devices:
-        completed = sum(1 for d in devices if d.status == DeviceExecutionStatus.COMPLETED)
-        failed = sum(1 for d in devices if d.status == DeviceExecutionStatus.FAILED)
-        progress = BatchProgress(
-            total=len(devices),
-            processed=completed + failed,
-            pending=0,
-            failed=failed,
-        )
-
-    return WorkflowStatusResponse(
-        workflow_id=workflow_id,
-        status=wf_status,
-        progress=progress,
-        devices=devices,
-    )
-
-
-def _temporal_status_to_device_status(
-    temporal_status: str,
-) -> DeviceExecutionStatus:
-    """Mapea el status de Temporal al enum DeviceExecutionStatus."""
-    mapping = {
-        "RUNNING": DeviceExecutionStatus.RUNNING,
-        "COMPLETED": DeviceExecutionStatus.COMPLETED,
-        "FAILED": DeviceExecutionStatus.FAILED,
-        "TIMED_OUT": DeviceExecutionStatus.TIMED_OUT,
-        "TERMINATED": DeviceExecutionStatus.TERMINATED,
-        "CANCELED": DeviceExecutionStatus.CANCELED,
-    }
-    return mapping.get(temporal_status, DeviceExecutionStatus.PENDING)
-
-
-def _normalize_result_item(item: object) -> dict | str | None:
-    """Normaliza un item de resultado de Temporal a dict/str serializable."""
-    if item is None:
-        return None
-    if isinstance(item, (dict, str)):
-        return item
-    if is_dataclass(item):
-        return asdict(item)
-
-    serial_number = getattr(item, "serial_number", None)
-    filename = getattr(item, "filename", None)
-    status = getattr(item, "status", None)
-    if serial_number is not None or filename is not None or status is not None:
-        return {
-            "serial_number": serial_number,
-            "filename": filename,
-            "status": status,
-        }
-    return None
-
-
-def _normalize_workflow_result(result: object) -> list[dict | str] | None:
-    """Normaliza el resultado del parent workflow a lista serializable."""
-    if result is None:
-        return None
-    if not isinstance(result, list):
-        normalized_item = _normalize_result_item(result)
-        return [normalized_item] if normalized_item is not None else None
-
-    normalized: list[dict | str] = []
-    for item in result:
-        normalized_item = _normalize_result_item(item)
-        if normalized_item is not None:
-            normalized.append(normalized_item)
-    return normalized
-
-
-def _normalize_device_result(result: object) -> dict | None:
-    """Normaliza el resultado del child workflow a dict compatible con schema."""
-    normalized = _normalize_result_item(result)
-    if isinstance(normalized, dict):
-        return normalized
-    return None
-
-
-async def _build_device_status_detail(
-    workflow_id: str,
-    serial_number: str,
-    temporal_client: Client,
-    *,
-    known_status: DeviceExecutionStatus | None = None,
-    fallback_events: list[dict] | None = None,
-    raise_if_missing: bool,
-) -> DeviceStatusResponse:
-    child_workflow_id = f"{workflow_id}-{serial_number}"
-    child_handle = temporal_client.get_workflow_handle(child_workflow_id)
-
-    try:
-        description = await child_handle.describe()
-    except RPCError:
-        if known_status is None:
-            parent_handle = temporal_client.get_workflow_handle(workflow_id)
-            try:
-                device_statuses = await parent_handle.query(
-                    FirmwareUpdateBatchWorkflow.get_device_statuses
-                )
-            except Exception:
-                device_statuses = {}
-
-            if serial_number in device_statuses:
-                known_status = DeviceExecutionStatus(device_statuses[serial_number])
-
-        if known_status is not None:
-            return DeviceStatusResponse(
-                workflow_id=child_workflow_id,
-                serial_number=serial_number,
-                status=known_status,
-                message=_extract_message_from_events(fallback_events or []),
-                events=fallback_events or [],
-            )
-
-        if raise_if_missing:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Device '{serial_number}' not found in workflow '{workflow_id}'",
-            )
-
-        return DeviceStatusResponse(
-            workflow_id=child_workflow_id,
-            serial_number=serial_number,
-            status=DeviceExecutionStatus.PENDING,
-            message=_extract_message_from_events(fallback_events or []),
-            events=fallback_events or [],
-        )
-
-    wf_status = description.status.name if description.status else "UNKNOWN"
-    device_status = _temporal_status_to_device_status(wf_status)
-
-    history = await child_handle.fetch_history()
-    events = parse_workflow_events(history)
-    events = enrich_events_with_pending_activities(events, description.raw_description)
-
-    message = _extract_message_from_events(events)
-    if wf_status == "COMPLETED":
-        try:
-            normalized_result = _normalize_device_result(await child_handle.result())
-            result_message = _extract_message_from_result(normalized_result)
-            if result_message:
-                message = result_message
-        except Exception:
-            pass
-
-    return DeviceStatusResponse(
-        workflow_id=child_workflow_id,
-        serial_number=serial_number,
-        status=device_status,
-        message=message,
-        events=events,
-    )
-
-
-def _extract_message_from_result(result: dict | None) -> str | None:
-    if not result:
-        return None
-
-    status = result.get("status")
-    if isinstance(status, str) and status:
-        return status
-
-    filename = result.get("filename")
-    serial = result.get("serial_number")
-    if isinstance(filename, str) and filename:
-        if isinstance(serial, str) and serial:
-            return f"Firmware updated for {serial} with {filename}"
-        return f"Firmware updated with {filename}"
-
-    return None
-
-
-def _extract_message_from_events(events: list[dict]) -> str | None:
-    for event in reversed(events):
-        details = event.get("details", {})
-        failure = details.get("failure")
-        if isinstance(failure, dict):
-            failure_message = _extract_failure_message(failure)
-            if failure_message:
-                return failure_message
-
-        raw_result = details.get("result")
-        if isinstance(raw_result, str) and raw_result:
-            # Si viene como JSON serializado, intentar extraer el status interno.
-            try:
-                parsed = json.loads(raw_result)
-                if isinstance(parsed, dict):
-                    status = parsed.get("status")
-                    if isinstance(status, str) and status:
-                        return status
-            except Exception:
-                pass
-            return raw_result
-
-    return None
-
-
-def _extract_failure_message(failure: dict) -> str | None:
-    cause = failure.get("cause")
-    if isinstance(cause, dict):
-        cause_message = _extract_failure_message(cause)
-        if cause_message:
-            return cause_message
-
-    message = failure.get("message")
-    if isinstance(message, str) and message:
-        return message
-
-    return None
+    return await wf_service.get_group_status(payload, temporal_client)

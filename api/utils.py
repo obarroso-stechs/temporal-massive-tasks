@@ -63,12 +63,38 @@ def _format_pending_state(state: int) -> str:
         return f"UNKNOWN_{state}"
 
 
+_INTERNAL_EVENT_TYPES = {
+    EventType.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED,
+    EventType.EVENT_TYPE_WORKFLOW_TASK_STARTED,
+    EventType.EVENT_TYPE_WORKFLOW_TASK_COMPLETED,
+    EventType.EVENT_TYPE_WORKFLOW_TASK_FAILED,
+    EventType.EVENT_TYPE_WORKFLOW_TASK_TIMED_OUT,
+}
+
+# Mapeo de nombres técnicos de activities a etiquetas amigables para el usuario.
+_ACTIVITY_FRIENDLY_NAMES: dict[str, str] = {
+    "verify_device_exists": "Verificar dispositivo",
+    "trigger_firmware_download": "Descargar firmware",
+    "mark_task_started": "Iniciar tarea",
+    "mark_task_completed": "Completar tarea",
+    "mark_task_canceled": "Cancelar tarea",
+    "upsert_device_status": "Actualizar estado",
+    "set_device_parameter": "Aplicar parámetro",
+    "get_device_parameters": "Obtener parámetros",
+}
+
+
 def parse_workflow_events(history: WorkflowHistory) -> list[dict[str, Any]]:
     """Convierte todos los eventos de un WorkflowHistory a una lista plana.
 
+    Filtra eventos internos de Temporal (WORKFLOW_TASK_*) que no son
+    relevantes para el usuario final.
     Usado para Caso 1: event history completo de un child workflow.
     """
-    return [_event_to_dict(event) for event in history.events]
+    return [
+        _event_to_dict(event) for event in history.events
+        if event.event_type not in _INTERNAL_EVENT_TYPES
+    ]
 
 
 def group_child_events_by_device(
@@ -194,68 +220,41 @@ def _extract_event_details(event: Any) -> dict[str, Any]:
 
     # ── Workflow lifecycle ────────────────────────────────────
     if et == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED:
-        attrs = event.workflow_execution_started_event_attributes
-        if attrs:
-            details["workflow_type"] = attrs.workflow_type.name if attrs.workflow_type else None
-            details["task_queue"] = attrs.task_queue.name if attrs.task_queue else None
-            if attrs.parent_workflow_execution and attrs.parent_workflow_execution.workflow_id:
-                details["parent_workflow_id"] = attrs.parent_workflow_execution.workflow_id
+        pass  # Sin detalles técnicos expuestos al usuario
 
     elif et == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED:
-        attrs = event.workflow_execution_completed_event_attributes
-        if attrs and attrs.result and attrs.result.payloads:
-            details["result"] = _payloads_to_str(attrs.result)
+        pass  # Sin detalles — el resultado ya se muestra en el último ACTIVITY_TASK_COMPLETED
 
     elif et == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED:
         attrs = event.workflow_execution_failed_event_attributes
         if attrs:
             details.update(_failure_to_dict(attrs.failure))
-            if attrs.retry_state:
-                details["retry_state"] = str(attrs.retry_state)
 
     elif et == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT:
-        attrs = event.workflow_execution_timed_out_event_attributes
-        if attrs and attrs.retry_state:
-            details["retry_state"] = str(attrs.retry_state)
+        pass  # Sin detalles técnicos
+
+    elif et == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED:
+        attrs = event.workflow_execution_signaled_event_attributes
+        if attrs:
+            details["signal_name"] = attrs.signal_name or None
 
     elif et == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_CANCELED:
         pass  # No details relevantes
 
     elif et == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW:
-        attrs = event.workflow_execution_continued_as_new_event_attributes
-        if attrs:
-            details["new_execution_run_id"] = attrs.new_execution_run_id if attrs.new_execution_run_id else None
-            details["workflow_type"] = attrs.workflow_type.name if attrs.workflow_type else None
-
-    # ── Workflow tasks ────────────────────────────────────────
-    elif et == EventType.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED:
-        attrs = event.workflow_task_scheduled_event_attributes
-        if attrs:
-            details["task_queue"] = attrs.task_queue.name if attrs.task_queue else None
-
-    elif et == EventType.EVENT_TYPE_WORKFLOW_TASK_STARTED:
-        attrs = event.workflow_task_started_event_attributes
-        if attrs:
-            details["identity"] = attrs.identity or None
-            details["history_size_bytes"] = attrs.history_size_bytes or None
-
-    elif et == EventType.EVENT_TYPE_WORKFLOW_TASK_COMPLETED:
-        attrs = event.workflow_task_completed_event_attributes
-        if attrs:
-            details["identity"] = attrs.identity or None
+        pass  # Sin detalles técnicos expuestos
 
     # ── Activity tasks ────────────────────────────────────────
     elif et == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
         attrs = event.activity_task_scheduled_event_attributes
-        if attrs:
-            details["activity_type"] = attrs.activity_type.name if attrs.activity_type else None
-            details["activity_id"] = attrs.activity_id or None
+        if attrs and attrs.activity_type:
+            raw_name = attrs.activity_type.name or ""
+            details["activity"] = _ACTIVITY_FRIENDLY_NAMES.get(raw_name, raw_name)
 
     elif et == EventType.EVENT_TYPE_ACTIVITY_TASK_STARTED:
         attrs = event.activity_task_started_event_attributes
-        if attrs:
-            details["identity"] = attrs.identity or None
-            details["attempt"] = attrs.attempt or None
+        if attrs and attrs.attempt and attrs.attempt > 1:
+            details["intento"] = attrs.attempt
 
     elif et == EventType.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
         attrs = event.activity_task_completed_event_attributes
@@ -266,75 +265,40 @@ def _extract_event_details(event: Any) -> dict[str, Any]:
         attrs = event.activity_task_failed_event_attributes
         if attrs:
             details.update(_failure_to_dict(attrs.failure))
-            if attrs.retry_state:
-                details["retry_state"] = str(attrs.retry_state)
 
     elif et == EventType.EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT:
         attrs = event.activity_task_timed_out_event_attributes
         if attrs:
             details.update(_failure_to_dict(attrs.failure))
-            if attrs.retry_state:
-                details["retry_state"] = str(attrs.retry_state)
 
     elif et == EventType.EVENT_TYPE_ACTIVITY_TASK_CANCELED:
         pass  # No details relevantes extra
 
     # ── Child workflow events ─────────────────────────────────
     elif et == EventType.EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED:
-        attrs = event.start_child_workflow_execution_initiated_event_attributes
-        if attrs:
-            details["workflow_type"] = attrs.workflow_type.name if attrs.workflow_type else None
-            details["child_workflow_id"] = attrs.workflow_id or None
-            details["task_queue"] = attrs.task_queue.name if attrs.task_queue else None
+        pass  # Sin detalles técnicos
 
     elif et == EventType.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_STARTED:
-        attrs = event.child_workflow_execution_started_event_attributes
-        if attrs:
-            details["workflow_type"] = attrs.workflow_type.name if attrs.workflow_type else None
-            if attrs.workflow_execution:
-                details["child_workflow_id"] = attrs.workflow_execution.workflow_id or None
+        pass  # Sin detalles técnicos
 
     elif et == EventType.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED:
         attrs = event.child_workflow_execution_completed_event_attributes
-        if attrs:
-            details["workflow_type"] = attrs.workflow_type.name if attrs.workflow_type else None
-            if attrs.workflow_execution:
-                details["child_workflow_id"] = attrs.workflow_execution.workflow_id or None
-            if attrs.result and attrs.result.payloads:
-                details["result"] = _payloads_to_str(attrs.result)
+        if attrs and attrs.result and attrs.result.payloads:
+            details["result"] = _payloads_to_str(attrs.result)
 
     elif et == EventType.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_FAILED:
         attrs = event.child_workflow_execution_failed_event_attributes
         if attrs:
-            details["workflow_type"] = attrs.workflow_type.name if attrs.workflow_type else None
-            if attrs.workflow_execution:
-                details["child_workflow_id"] = attrs.workflow_execution.workflow_id or None
             details.update(_failure_to_dict(attrs.failure))
-            if attrs.retry_state:
-                details["retry_state"] = str(attrs.retry_state)
 
     elif et == EventType.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_CANCELED:
-        attrs = event.child_workflow_execution_canceled_event_attributes
-        if attrs:
-            details["workflow_type"] = attrs.workflow_type.name if attrs.workflow_type else None
-            if attrs.workflow_execution:
-                details["child_workflow_id"] = attrs.workflow_execution.workflow_id or None
+        pass  # Sin detalles técnicos
 
     elif et == EventType.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_TIMED_OUT:
-        attrs = event.child_workflow_execution_timed_out_event_attributes
-        if attrs:
-            details["workflow_type"] = attrs.workflow_type.name if attrs.workflow_type else None
-            if attrs.workflow_execution:
-                details["child_workflow_id"] = attrs.workflow_execution.workflow_id or None
-            if attrs.retry_state:
-                details["retry_state"] = str(attrs.retry_state)
+        pass  # Sin detalles técnicos
 
     elif et == EventType.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_TERMINATED:
-        attrs = event.child_workflow_execution_terminated_event_attributes
-        if attrs:
-            details["workflow_type"] = attrs.workflow_type.name if attrs.workflow_type else None
-            if attrs.workflow_execution:
-                details["child_workflow_id"] = attrs.workflow_execution.workflow_id or None
+        pass  # Sin detalles técnicos
 
     return details
 
@@ -394,6 +358,25 @@ def _build_failure(failure: Any) -> dict[str, Any] | None:
             result["cause"] = cause_dict
 
     return result or None
+
+
+def infer_paused_from_history(history: WorkflowHistory) -> bool:
+    """Determina si el workflow está pausado leyendo el historial de señales.
+
+    Recorre los eventos de señal (WORKFLOW_EXECUTION_SIGNALED) en orden
+    cronológico y retorna True si la última señal de control fue pause_batch,
+    False si fue resume_batch o no hay señales de control.
+
+    Útil como fallback cuando el query get_progress no está disponible
+    (e.g. workflow en start_delay, aún no procesado por el worker).
+    """
+    last_control_signal: str | None = None
+    for event in history.events:
+        if event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED:
+            attrs = event.workflow_execution_signaled_event_attributes
+            if attrs and attrs.signal_name in ("pause_batch", "resume_batch"):
+                last_control_signal = attrs.signal_name
+    return last_control_signal == "pause_batch"
 
 
 def _payloads_to_str(payloads: Any) -> str | None:

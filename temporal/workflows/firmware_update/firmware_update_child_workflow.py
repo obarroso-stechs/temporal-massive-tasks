@@ -22,6 +22,17 @@ class FirmwareUpdateChildWorkflow:
     Paso 2 → trigger_firmware_download (descarga firmware al dispositivo)
     """
 
+    def __init__(self) -> None:
+        self._paused = False
+
+    @workflow.signal
+    def pause(self) -> None:
+        self._paused = True
+
+    @workflow.signal
+    def resume(self) -> None:
+        self._paused = False
+
     @workflow.run
     async def run(self, input: UpdateFirmware) -> FirmwareUpdateResult:
         # Paso 1: verificar que el serial number corresponde a un equipo registrado
@@ -31,6 +42,9 @@ class FirmwareUpdateChildWorkflow:
             start_to_close_timeout=timedelta(seconds=30),
             retry_policy=RetryPolicy(maximum_attempts=5),
         )
+
+        # Pause point between activities
+        await workflow.wait_condition(lambda: not self._paused)
 
         # Paso 2: disparar descarga de firmware al dispositivo
         result = await workflow.execute_activity(

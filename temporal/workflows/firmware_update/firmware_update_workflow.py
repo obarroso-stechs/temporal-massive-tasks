@@ -1,22 +1,38 @@
 import asyncio
+from datetime import timedelta
 from typing import List, Union
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from temporal.constants import TEMPORAL_TASK_QUEUE
+    from pathlib import Path # noqa: F401
+    from configurations.temporal import TEMPORAL_TASK_QUEUE
     from temporal.models import (
         FirmwareUpdateBatchInput,
         FirmwareUpdateResult,
         UpdateFirmware,
     )
     from temporal.workflows.firmware_update.firmware_update_child_workflow import FirmwareUpdateChildWorkflow
+    from temporal.activities.reporting_activities import (
+        mark_task_started,
+        mark_task_completed,
+        mark_task_canceled,
+        upsert_device_status,
+    )
 
 # Cuántos child workflows lanzar en paralelo por batch.
 # Cada child genera ~5 eventos en el padre (init, started, completed).
 # Con BATCH_SIZE=50 y continue-as-new, nos mantenemos lejos del límite de 50K eventos.
 BATCH_SIZE = 50
+
+
+def _sanitize_error_detail(exc: BaseException) -> str:
+    """Extrae el mensaje más específico de una cadena de excepciones de Temporal."""
+    cause = exc
+    while cause.__cause__ is not None:
+        cause = cause.__cause__
+    return str(cause)
 
 
 @workflow.defn
@@ -36,6 +52,15 @@ class FirmwareUpdateBatchWorkflow:
         self._processed: int = 0
         self._failed: int = 0
         self._device_statuses: dict[str, str] = {}
+        self._paused: bool = False
+
+    @workflow.signal
+    def pause_batch(self) -> None:
+        self._paused = True
+
+    @workflow.signal
+    def resume_batch(self) -> None:
+        self._paused = False
 
     @workflow.query
     def get_progress(self) -> dict:
@@ -44,6 +69,7 @@ class FirmwareUpdateBatchWorkflow:
             "processed": self._processed,
             "pending": self._total - self._processed,
             "failed": self._failed,
+            "is_paused": self._paused,
         }
 
     @workflow.query
@@ -68,10 +94,22 @@ class FirmwareUpdateBatchWorkflow:
             1 for s in self._device_statuses.values() if s == "FAILED"
         )
 
+        # Mark started only on first execution (not after continue-as-new)
+        if input.processed_count == 0:
+            await workflow.execute_activity(
+                mark_task_started,
+                workflow.info().workflow_id,
+                start_to_close_timeout=timedelta(seconds=10),
+            )
+
         results: List[Union[FirmwareUpdateResult, str]] = []
         remaining = list(input.items)
 
         while remaining:
+            # Pause point between batches
+            if self._paused:
+                await workflow.wait_condition(lambda: not self._paused)
+
             batch = remaining[:BATCH_SIZE]
             remaining = remaining[BATCH_SIZE:]
 
@@ -97,6 +135,11 @@ class FirmwareUpdateBatchWorkflow:
                     )
                 )
 
+        await workflow.execute_activity(
+            mark_task_completed,
+            workflow.info().workflow_id,
+            start_to_close_timeout=timedelta(seconds=10),
+        )
         workflow.logger.info(
             f"Batch completo: {self._processed} equipos procesados"
         )
@@ -143,9 +186,21 @@ class FirmwareUpdateBatchWorkflow:
                 raw_results[idx] = f"ERROR [{item.serialNumber}]: {completed_result}"
                 self._device_statuses[item.serialNumber] = "FAILED"
                 self._failed += 1
+                await workflow.execute_activity(
+                    upsert_device_status,
+                    args=[workflow.info().workflow_id, item.serialNumber, "FAILED", _sanitize_error_detail(completed_result)],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=RetryPolicy(maximum_attempts=5),
+                )
             else:
                 raw_results[idx] = completed_result
                 self._device_statuses[item.serialNumber] = "COMPLETED"
+                await workflow.execute_activity(
+                    upsert_device_status,
+                    args=[workflow.info().workflow_id, item.serialNumber, "COMPLETED", f"Firmware actualizado: {completed_result.filename}"],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=RetryPolicy(maximum_attempts=5),
+                )
 
             self._processed += 1
 

@@ -9,6 +9,11 @@ from .parameter_update import (
     ParameterUpdateResult,
     UpdateParameter,
 )
+from .parameter_set import (
+    ParameterSetBatchInput,
+    ParameterSetResult,
+    UpdateParameterSet,
+)
 
 __all__ = [
     "UpdateFirmware",
@@ -18,4 +23,7 @@ __all__ = [
     "UpdateParameter",
     "ParameterUpdateBatchInput",
     "ParameterUpdateResult",
+    "UpdateParameterSet",
+    "ParameterSetBatchInput",
+    "ParameterSetResult",
 ]
