@@ -18,7 +18,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "nbi_cli"))
 
 from .client import NbiClient
-from .configuration.nbi_configuration import NbiConfig
+from configurations.nbi import NbiConfig
 from .exceptions import (
     ApiAttributeError,
     ApiException,

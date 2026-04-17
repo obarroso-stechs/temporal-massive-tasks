@@ -4,7 +4,7 @@ from typing import List, Union
 
 from temporalio.client import Client
 
-from temporal.constants import (
+from configurations.temporal import (
     TEMPORAL_NAMESPACE,
     TEMPORAL_TARGET_HOST,
     TEMPORAL_TASK_QUEUE,

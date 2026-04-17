@@ -1,34 +1,69 @@
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from temporal.activities import trigger_firmware_download, verify_device_exists
-from temporal.constants import (
+from temporal.activities.firmware_activities import trigger_firmware_download
+from temporal.activities.parameter_update_activities import set_parameter_value
+from temporal.activities.parameter_set_activities import set_parameter_value_parameter_set
+from temporal.activities.common_activities import verify_device_exists
+from temporal.activities.get_parameter_values_activities import get_parameter_values
+from temporal.activities.reporting_activities import (
+    mark_task_started,
+    mark_task_completed,
+    mark_task_failed,
+    mark_task_canceled,
+    upsert_device_status,
+)
+from configurations.temporal import (
     TEMPORAL_NAMESPACE,
     TEMPORAL_TARGET_HOST,
     TEMPORAL_TASK_QUEUE,
 )
-from temporal.workflows import FirmwareUpdateBatchWorkflow, FirmwareUpdateChildWorkflow
+from temporal.workflows import (
+    FirmwareUpdateBatchWorkflow,
+    FirmwareUpdateChildWorkflow,
+    ParameterUpdateBatchWorkflow,
+    ParameterUpdateChildWorkflow,
+    ParameterSetBatchWorkflow,
+    ParameterSetChildWorkflow,
+    GetParameterValuesBatchWorkflow,
+    GetParameterValuesChildWorkflow,
+)
 
 
 async def run_worker() -> None:
     client = await Client.connect(TEMPORAL_TARGET_HOST, namespace=TEMPORAL_NAMESPACE)
 
-    # Las activities son sync (def) porque NbiClient usa urllib3 bloqueante.
-    # El ThreadPoolExecutor permite ejecutar múltiples activities en paralelo
-    # sin bloquear el event loop de Temporal.
+    # Las activities registradas son async y usan I/O no bloqueante.
     print("WORKER STARTED")
-    with ThreadPoolExecutor(max_workers=20) as executor:
-        worker = Worker(
-            client,
-            task_queue=TEMPORAL_TASK_QUEUE,
-            workflows=[FirmwareUpdateBatchWorkflow, FirmwareUpdateChildWorkflow],
-            activities=[verify_device_exists, trigger_firmware_download],
-            activity_executor=executor,
-        )
-        await worker.run()
+    worker = Worker(
+        client,
+        task_queue=TEMPORAL_TASK_QUEUE,
+        workflows=[
+            FirmwareUpdateBatchWorkflow,
+            FirmwareUpdateChildWorkflow,
+            ParameterUpdateBatchWorkflow,
+            ParameterUpdateChildWorkflow,
+            ParameterSetBatchWorkflow,
+            ParameterSetChildWorkflow,
+            GetParameterValuesBatchWorkflow,
+            GetParameterValuesChildWorkflow,
+        ],
+        activities=[
+            verify_device_exists,
+            trigger_firmware_download,
+            set_parameter_value,
+            set_parameter_value_parameter_set,
+            get_parameter_values,
+            mark_task_started,
+            mark_task_completed,
+            mark_task_failed,
+            mark_task_canceled,
+            upsert_device_status,
+        ],
+    )
+    await worker.run()
 
 
 if __name__ == "__main__":

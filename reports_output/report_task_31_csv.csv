@@ -1,0 +1,9 @@
+MASSIVE TASK PROGRAM
+nombre tarea:,Firmware Update | Group not assigned | 2026-03-30 10:48
+total devices:,1
+processed devices:,1
+failed devices:,0
+group name:,Grupo no asignado
+
+serial number,modelo,marca,status task,detalle,scheduled_at,started_at,end_at
+ZTEEQAAAB07Q3939,F680,ZTE,COMPLETED,Firmware actualizado: iplan_F680_V6.0.20P3N12B_UPGRADE_BOOTLDR.bin,,,

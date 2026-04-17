@@ -1,16 +1,11 @@
 """Firmware update activities.
 
-Todas las activities son funciones sync (def, no async def) porque
-el NbiClient usa urllib3 bloqueante. El worker debe configurar un
-ThreadPoolExecutor como activity_executor para que corran en threads
-separados sin bloquear el event loop de Temporal.
+Activities async para llamadas NBI no bloqueantes mediante AsyncNbiClient.
 """
 
 from temporalio import activity
-from temporalio.exceptions import ApplicationError
 
-from nbi import NbiClient, NbiConfig
-from openapi_client.models import DownloadFileRequest
+from nbi_client_async import AsyncNbiClient, NbiConfig
 
 from temporal.models import (
     FirmwareDownloadInput,
@@ -19,43 +14,19 @@ from temporal.models import (
 
 
 @activity.defn
-def verify_device_exists(serial_number: str) -> str:
-    """Verifica que el serial number corresponde a un dispositivo registrado.
-
-    Consulta la API filtrando por serial_number con projection [_deviceId].
-    Si la respuesta contiene al menos un item, el dispositivo existe y
-    se retorna el serial_number recibido. Si viene vacío, lanza error.
-    """
-    with NbiClient(NbiConfig()) as client:
-        devices = client.devices.list_sync(
-            serial_number=serial_number,
-            projection=["_deviceId._SerialNumber"],
-        )
-
-    if devices:
-        return serial_number
-
-    raise ApplicationError(
-        f"Device not found for serialNumber={serial_number!r}",
-        type="DEVICE_NOT_FOUND",
-        non_retryable=True,
-    )
-
-
-@activity.defn
-def trigger_firmware_download(input: FirmwareDownloadInput) -> FirmwareUpdateResult:
+async def trigger_firmware_download(input: FirmwareDownloadInput) -> FirmwareUpdateResult:
     """Dispara la descarga de firmware hacia el dispositivo via TR-069.
 
     Llama a files/{serial_number}/download con el body:
       { "filename": "...", "file_type": "1 Firmware Upgrade Image" }
     """
-    body = DownloadFileRequest(
-        filename=input.filename,
-        file_type=input.file_type,
-    )
+    body = {
+        "filename": input.filename,
+        "file_type": input.file_type,
+    }
 
-    with NbiClient(NbiConfig()) as client:
-        response = client.files.download_sync(
+    async with AsyncNbiClient(NbiConfig()) as client:
+        response = await client.files.download(
             serial_number=input.serial_number,
             body=body,
         )
