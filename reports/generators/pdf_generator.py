@@ -51,6 +51,12 @@ class PdfReportGenerator(BaseReportGenerator):
             spaceAfter=6,
         )
         meta_style = styles["Normal"]
+        detail_style = ParagraphStyle(
+            "Detail",
+            parent=styles["Normal"],
+            fontSize=7,
+            leading=9,
+        )
 
         story = []
 
@@ -76,18 +82,19 @@ class PdfReportGenerator(BaseReportGenerator):
         table_data = [header_row]
 
         for row in data.rows:
+            detail_text = (row.detail or "-").replace("\n", "<br/>")
             table_data.append([
                 row.serial_number,
                 row.model or "-",
                 row.manufacturer or "-",
                 row.task_status,
-                row.detail or "-",
+                Paragraph(detail_text, detail_style),
                 _fmt(row.scheduled_at),
                 _fmt(row.started_at),
                 _fmt(row.end_at),
             ])
 
-        col_widths = [4 * cm, 3 * cm, 3 * cm, 3 * cm, 5 * cm, 3.5 * cm, 3.5 * cm, 3.5 * cm]
+        col_widths = [3.5 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm, 7 * cm, 3 * cm, 2.85 * cm, 2.85 * cm]
         table = Table(table_data, colWidths=col_widths, repeatRows=1)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2C3E50")),

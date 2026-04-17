@@ -18,6 +18,7 @@ from routers.device_groups import router as device_groups_router
 from routers.firmware import router as firmware_router
 from routers.parameter_update import router as parameter_update_router
 from routers.parameter_set import router as parameter_set_router
+from routers.parameter_get import router as parameter_get_router
 from routers.reports import router as reports_router
 from routers.tasks import router as tasks_router
 
@@ -40,6 +41,7 @@ app = FastAPI(
 app.include_router(firmware_router)
 app.include_router(parameter_update_router)
 app.include_router(parameter_set_router)
+app.include_router(parameter_get_router)
 app.include_router(devices_router)
 app.include_router(device_groups_router)
 app.include_router(reports_router)

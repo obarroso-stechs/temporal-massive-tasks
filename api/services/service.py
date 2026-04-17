@@ -14,6 +14,8 @@ from db.services.device_group_service import DeviceGroupService
 from db.services.task_service import TaskService
 from temporal.models import (
     FirmwareUpdateBatchInput,
+    GetParameterValuesBatchInput,
+    GetParameterValuesInput,
     ParameterSetBatchInput,
     ParameterUpdateBatchInput,
     UpdateFirmware,
@@ -23,6 +25,7 @@ from temporal.models import (
 from temporal.workflows.firmware_update.firmware_update_workflow import FirmwareUpdateBatchWorkflow
 from temporal.workflows.parameter_set.parameter_set_workflow import ParameterSetBatchWorkflow
 from temporal.workflows.parameter_update.parameter_update_workflow import ParameterUpdateBatchWorkflow
+from temporal.workflows.get_parameter_values.get_parameter_values_workflow import GetParameterValuesBatchWorkflow
 
 
 class BatchOrchestrationService:
@@ -153,6 +156,51 @@ class BatchOrchestrationService:
         await self._task_service.create_task(
             workflow_id=workflow_id,
             task_type=TaskTypeEnum.PARAMETER_SET,
+            serial_numbers=serials,
+            group_id=group_id,
+            group_name=group_name,
+            scheduled_at=scheduled_at,
+        )
+        return handle.id, handle.result_run_id
+
+    async def start_get_parameter_values_batch(
+        self,
+        *,
+        client: Client,
+        serial_numbers: list[str] | None = None,
+        group_id: int | None = None,
+        paths: list[str],
+        group_name: str | None = None,
+        start_delay: timedelta | None = None,
+    ) -> tuple[str, str]:
+        if group_id is not None:
+            group = await self._group_service.get_by_id(group_id)
+            group_name = group.name
+            serials = await self._group_service.resolve_serials_for_batch(group_id)
+            if not serials:
+                raise ValueError(f"El grupo '{group_id}' no tiene dispositivos.")
+        else:
+            serials = serial_numbers or []
+
+        items = [
+            GetParameterValuesInput(serialNumber=sn, paths=paths)
+            for sn in serials
+        ]
+
+        workflow_id = f"get-parameter-values-batch-{uuid.uuid4().hex}"
+        scheduled_at = datetime.now(UTC) + start_delay if start_delay else None
+
+        handle = await client.start_workflow(
+            GetParameterValuesBatchWorkflow.run,
+            GetParameterValuesBatchInput(items=items),
+            id=workflow_id,
+            task_queue=TEMPORAL_TASK_QUEUE,
+            start_delay=start_delay,
+        )
+
+        await self._task_service.create_task(
+            workflow_id=workflow_id,
+            task_type=TaskTypeEnum.GET_PARAMETER_VALUES,
             serial_numbers=serials,
             group_id=group_id,
             group_name=group_name,

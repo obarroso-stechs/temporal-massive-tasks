@@ -119,8 +119,8 @@ function ReportDetailModal({ open, onClose, report }) {
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <Badge variant="default">{FORMAT_LABELS[report.report_format]}</Badge>
               {report.task_type && (
-                <Badge variant={report.task_type === "FIRMWARE_UPDATE" ? "primary" : "info"}>
-                    {report.task_type === "FIRMWARE_UPDATE" ? "Firmware" : report.task_type === "PARAMETER_SET" ? "Parameter Set" : "Parámetros"}
+                <Badge variant={report.task_type === "FIRMWARE_UPDATE" ? "primary" : report.task_type === "GET_PARAMETER_VALUES" ? "success" : "info"}>
+                    {report.task_type === "FIRMWARE_UPDATE" ? "Firmware" : report.task_type === "PARAMETER_SET" ? "Parameter Set" : report.task_type === "GET_PARAMETER_VALUES" ? "Get Params" : "Parámetros"}
                 </Badge>
               )}
               <Badge variant={report.has_file ? "success" : "warning"}>
@@ -182,7 +182,7 @@ function ReportDetailModal({ open, onClose, report }) {
                   key: "detail",
                   label: "Detalle",
                   render: (v) => (
-                    <span style={{ fontSize: "12px", color: DS.colors.neutral600 }}>{v || "—"}</span>
+                    <span style={{ fontSize: "12px", color: DS.colors.neutral600, whiteSpace: "pre-wrap", maxWidth: "300px", display: "block" }}>{v || "—"}</span>
                   ),
                 },
               ]}
@@ -265,8 +265,8 @@ export default function ReportsSection() {
         <div>
           <p style={{ margin: 0, fontWeight: 500, fontSize: "14px" }}>{v}</p>
           {row.task_type && (
-            <Badge variant={row.task_type === "FIRMWARE_UPDATE" ? "primary" : "info"} size="sm">
-              {row.task_type === "FIRMWARE_UPDATE" ? "Firmware" : row.task_type === "PARAMETER_SET" ? "Parameter Set" : "Parámetros"}
+            <Badge variant={row.task_type === "FIRMWARE_UPDATE" ? "primary" : row.task_type === "GET_PARAMETER_VALUES" ? "success" : "info"} size="sm">
+              {row.task_type === "FIRMWARE_UPDATE" ? "Firmware" : row.task_type === "PARAMETER_SET" ? "Parameter Set" : row.task_type === "GET_PARAMETER_VALUES" ? "Get Params" : "Parámetros"}
             </Badge>
           )}
         </div>

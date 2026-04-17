@@ -6,7 +6,7 @@ import {
 } from "../../shared/ui/primitives";
 import { tasksApi } from "../../api/tasks";
 import { groupsApi } from "../../api/groups";
-import { firmwareApi, parameterApi, parameterSetApi } from "../../api/workflows";
+import { firmwareApi, parameterApi, parameterSetApi, parameterGetApi } from "../../api/workflows";
 
 const fmt = (iso) =>
   iso ? new Date(iso).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" }) : "—";
@@ -24,12 +24,14 @@ const TASK_TYPE_LABELS = {
   FIRMWARE_UPDATE: "Firmware Update",
   PARAMETER_UPDATE: "Parameter Update",
   PARAMETER_SET: "Parameter Set",
+  GET_PARAMETER_VALUES: "Get Parameter Values",
 };
 
 const TASK_API_BY_TYPE = {
   FIRMWARE_UPDATE: firmwareApi,
   PARAMETER_UPDATE: parameterApi,
   PARAMETER_SET: parameterSetApi,
+  GET_PARAMETER_VALUES: parameterGetApi,
 };
 
 function parseParameterSetInput(raw) {
@@ -76,6 +78,17 @@ function parseParameterSetInput(raw) {
   }
 
   return parameters;
+}
+
+function parseParameterGetInput(raw) {
+  const paths = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!paths.length) {
+    throw new Error("Ingresá al menos un path de parámetro.");
+  }
+  return paths;
 }
 
 // ── Device event timeline modal ─────────────────────────────────────────────
@@ -537,6 +550,7 @@ function BatchForm({ type, groups, onSubmit, loading }) {
 
   const isFirmware = type === "firmware";
   const isParameterSet = type === "parameter-set";
+  const isParameterGet = type === "parameter-get";
 
   const handleSubmit = () => {
     setError(null);
@@ -563,6 +577,18 @@ function BatchForm({ type, groups, onSubmit, loading }) {
         body = {
           ...body,
           parameters: parseParameterSetInput(parameterMap),
+        };
+      } catch (e) {
+        setError(e.message);
+        return;
+      }
+    }
+
+    if (isParameterGet) {
+      try {
+        body = {
+          ...body,
+          paths: parseParameterGetInput(parameterMap),
         };
       } catch (e) {
         setError(e.message);
@@ -694,6 +720,18 @@ function BatchForm({ type, groups, onSubmit, loading }) {
         />
       )}
 
+      {isParameterGet && (
+        <Textarea
+          label="Paths de parámetros a consultar (uno por línea)"
+          placeholder={"Device.WiFi.SSID.1.SSID\nDevice.WiFi.SSID.1.Enable\nDevice.DeviceInfo.ModelName"}
+          value={parameterMap}
+          onChange={setParameterMap}
+          rows={6}
+          required
+          helper="Ingresá los paths TR-069/TR-181 que querés leer, uno por línea"
+        />
+      )}
+
       {/* Execution mode */}
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
         <label style={{ fontSize: "13px", fontWeight: 500, color: DS.colors.neutral800 }}>Ejecución</label>
@@ -767,7 +805,7 @@ function TaskHistoryTab() {
       key: "task_type",
       label: "Tipo",
       render: (v) => (
-        <Badge variant={v === "FIRMWARE_UPDATE" ? "primary" : v === "PARAMETER_SET" ? "warning" : "info"}>
+        <Badge variant={v === "FIRMWARE_UPDATE" ? "primary" : v === "PARAMETER_SET" ? "warning" : v === "GET_PARAMETER_VALUES" ? "success" : "info"}>
           {TASK_TYPE_LABELS[v] || v}
         </Badge>
       ),
@@ -825,6 +863,7 @@ function TaskHistoryTab() {
               { value: "FIRMWARE_UPDATE", label: "Firmware Update" },
               { value: "PARAMETER_UPDATE", label: "Parameter Update" },
               { value: "PARAMETER_SET", label: "Parameter Set" },
+              { value: "GET_PARAMETER_VALUES", label: "Get Parameter Values" },
             ]}
           />
         </div>
@@ -916,10 +955,28 @@ export default function TaskExecutionSection() {
     }
   };
 
+  const handleParameterGetSubmit = async ({ body, scheduleMode }) => {
+    setSubmitting(true);
+    setAlert(null);
+    try {
+      if (scheduleMode === "now") {
+        await parameterGetApi.startBatch(body);
+      } else {
+        await parameterGetApi.scheduleBatch(body);
+      }
+      setAlert({ type: "success", message: "Tarea de lectura de parámetros lanzada correctamente. Podés seguir el progreso en Historial." });
+    } catch (e) {
+      setAlert({ type: "error", message: e.message });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const tabs = [
     { key: "firmware", label: "Actualizar Firmware" },
     { key: "parameter", label: "Actualizar Parámetros" },
     { key: "parameter-set", label: "Set de Parámetros" },
+    { key: "parameter-get", label: "Lectura de Parámetros" },
     { key: "history", label: "Historial de Tareas" },
   ];
 
@@ -1001,6 +1058,25 @@ export default function TaskExecutionSection() {
             </h4>
             <p style={{ margin: 0, fontSize: "13px", color: DS.colors.neutral600, lineHeight: 1.6 }}>
               Ingresá un parámetro por línea con formato <strong>path: value</strong>. Ejemplo: Device.WiFi.SSID.1.Enable: true.
+            </p>
+          </Card>
+        </div>
+      )}
+
+      {activeTab === "parameter-get" && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: "24px" }}>
+          <Card>
+            <h3 style={{ margin: "0 0 20px", fontSize: "16px", fontWeight: 600 }}>
+              Lectura de Parámetros
+            </h3>
+            <BatchForm type="parameter-get" groups={groups} onSubmit={handleParameterGetSubmit} loading={submitting} />
+          </Card>
+          <Card style={{ backgroundColor: DS.colors.neutral50 }}>
+            <h4 style={{ margin: "0 0 12px", fontSize: "13px", fontWeight: 600, color: DS.colors.neutral700, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              Formato
+            </h4>
+            <p style={{ margin: 0, fontSize: "13px", color: DS.colors.neutral600, lineHeight: 1.6 }}>
+              Ingresá un path de parámetro por línea. Se consultará el valor actual de cada parámetro en cada dispositivo del lote.
             </p>
           </Card>
         </div>

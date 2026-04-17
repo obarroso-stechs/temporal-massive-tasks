@@ -80,12 +80,17 @@ class ExcelReportGenerator(BaseReportGenerator):
                 ws.cell(row=data_row_idx, column=col_idx).fill = fill
 
         # ── Auto column width ──
+        detail_col = 5
         for col_idx in range(1, len(header) + 1):
             max_len = max(
                 len(str(ws.cell(row=r, column=col_idx).value or ""))
                 for r in range(header_row_idx, ws.max_row + 1)
             )
-            ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, 40)
+            max_width = 60 if col_idx == detail_col else 40
+            ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, max_width)
+
+        for r in range(header_row_idx + 1, ws.max_row + 1):
+            ws.cell(row=r, column=detail_col).alignment = Alignment(wrap_text=True)
 
         buffer = io.BytesIO()
         wb.save(buffer)

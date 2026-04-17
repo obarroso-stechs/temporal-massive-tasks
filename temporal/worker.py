@@ -7,6 +7,7 @@ from temporal.activities.firmware_activities import trigger_firmware_download
 from temporal.activities.parameter_update_activities import set_parameter_value
 from temporal.activities.parameter_set_activities import set_parameter_value_parameter_set
 from temporal.activities.common_activities import verify_device_exists
+from temporal.activities.get_parameter_values_activities import get_parameter_values
 from temporal.activities.reporting_activities import (
     mark_task_started,
     mark_task_completed,
@@ -26,6 +27,8 @@ from temporal.workflows import (
     ParameterUpdateChildWorkflow,
     ParameterSetBatchWorkflow,
     ParameterSetChildWorkflow,
+    GetParameterValuesBatchWorkflow,
+    GetParameterValuesChildWorkflow,
 )
 
 
@@ -44,12 +47,15 @@ async def run_worker() -> None:
             ParameterUpdateChildWorkflow,
             ParameterSetBatchWorkflow,
             ParameterSetChildWorkflow,
+            GetParameterValuesBatchWorkflow,
+            GetParameterValuesChildWorkflow,
         ],
         activities=[
             verify_device_exists,
             trigger_firmware_download,
             set_parameter_value,
             set_parameter_value_parameter_set,
+            get_parameter_values,
             mark_task_started,
             mark_task_completed,
             mark_task_failed,

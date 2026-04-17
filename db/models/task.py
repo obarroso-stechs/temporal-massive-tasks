@@ -13,6 +13,7 @@ class TaskTypeEnum(str, enum.Enum):
     FIRMWARE_UPDATE = "FIRMWARE_UPDATE"
     PARAMETER_UPDATE = "PARAMETER_UPDATE"
     PARAMETER_SET = "PARAMETER_SET"
+    GET_PARAMETER_VALUES = "GET_PARAMETER_VALUES"
 
 
 class DeviceTaskStatusEnum(str, enum.Enum):
@@ -72,7 +73,7 @@ class TaskDeviceStatus(Base):
         nullable=False,
         default=DeviceTaskStatusEnum.PENDING,
     )
-    detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    detail: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(

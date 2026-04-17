@@ -14,6 +14,11 @@ from .parameter_set import (
     ParameterSetResult,
     UpdateParameterSet,
 )
+from .get_parameter_values import (
+    GetParameterValuesInput,
+    GetParameterValuesBatchInput,
+    GetParameterValuesResult,
+)
 
 __all__ = [
     "UpdateFirmware",
@@ -26,4 +31,7 @@ __all__ = [
     "UpdateParameterSet",
     "ParameterSetBatchInput",
     "ParameterSetResult",
+    "GetParameterValuesInput",
+    "GetParameterValuesBatchInput",
+    "GetParameterValuesResult",
 ]

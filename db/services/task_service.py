@@ -20,6 +20,7 @@ def _build_task_name(
         TaskTypeEnum.FIRMWARE_UPDATE: "Firmware Update",
         TaskTypeEnum.PARAMETER_UPDATE: "Parameter Update",
         TaskTypeEnum.PARAMETER_SET: "Parameter Set",
+        TaskTypeEnum.GET_PARAMETER_VALUES: "Get Parameter Values",
     }
     type_label = type_label_map.get(task_type, "Unknown Task")
     group_label = group_name or "Group not assigned"
